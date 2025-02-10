@@ -1,0 +1,13 @@
+group,replicate,fastq_1,fastq_2,antibody,control
+CDX19_ShRen_INPUT,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_08_LOVZQ_S8_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_08_LOVZQ_S8_L001_R2_001.fastq.gz,,
+CDX19_ShATOH1_3_INPUT,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_10_QDEOR_S10_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_10_QDEOR_S10_L001_R2_001.fastq.gz,,
+CDX19_ShRen_DOX_IP_Ptech,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_01_FTADL_S1_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_01_FTADL_S1_L001_R2_001.fastq.gz,Ptech,CDX19_ShRen_INPUT
+CDX19_ShATOH1_3_DOX_IP_Ptech,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_03_ESIJE_S3_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_03_ESIJE_S3_L001_R2_001.fastq.gz,Ptech,CDX19_ShATOH1_3_INPUT
+CDX19_ShRen_DOX_IP_SY0287,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_05_QTEMA_S5_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_05_QTEMA_S5_L001_R2_001.fastq.gz,SY0287,CDX19_ShRen_INPUT
+CDX19_ShATOH1_3_IP_SY0287,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_09_VIDOD_S9_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_09_VIDOD_S9_L001_R2_001.fastq.gz,SY0287,CDX19_ShATOH1_3_INPUT
+CDX19_ShATOH1_3_DOX_IP_SY0287,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_06_OEINF_S6_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_06_OEINF_S6_L001_R2_001.fastq.gz,SY0287,CDX19_ShATOH1_3_INPUT
+CDX19_ShRen_DOX_IP_H3K4me3,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_02_IHVGH_S2_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_02_IHVGH_S2_L001_R2_001.fastq.gz,H3K4me3,CDX19_ShRen_INPUT
+CDX19_ShATOH1_3_DOX_IP_H3K4me3,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_11_RNKFR_S11_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_11_RNKFR_S11_L001_R2_001.fastq.gz,H3K4me3,CDX19_ShATOH1_3_INPUT
+H146_INPUT,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_04_PGTZX_S4_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_04_PGTZX_S4_L001_R2_001.fastq.gz,,
+H146_IP_ASCL1,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_12_IHJQP_S12_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_12_IHJQP_S12_L001_R2_001.fastq.gz,ASCL1,H146_INPUT
+H146_IP_SY0287,1,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_07_BFDGO_S7_L001_R1_001.fastq.gz,/data/cep/shumphrey/AlessiasData/FASTQ/CD30_07_BFDGO_S7_L001_R2_001.fastq.gz,SY0287,H146_INPUT

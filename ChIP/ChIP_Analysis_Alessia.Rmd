@@ -1,0 +1,1109 @@
+---
+title: "ATOH1 ChIPSeq Analysis"
+author: "Alessia Catozzi"
+date: "04/01/2021"
+params:
+   CDX_folder: "/data/cep/CDX_Model_NGS_Data/RNA_Seq/"
+   Nextflow_output_RNASeq: "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_RNAseq/results_human/"
+   Nextflow_output_ChIPSeq: "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_ChIP/results_human/"
+   Design_files: "/data/cep/acatozzi/ATOH1_ChIPSeq/alessias-chip-analysis/Data/"
+   Output_data_ATOH1_KD_RNAseq: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_KD_RNAseq/"
+   Output_data_ATOH1_ChIP: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_ChIPseq/"
+   Output_data_CDX_Bulk: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/CDX_bulk_RNAseq/"
+   Output_data_BETA: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA/"
+   RDS_output: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/RDSfiles/"
+   Output_figures_ATOH1_KD_RNAseq: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_KD_RNAseq/"
+   Output_figures_ATOH1_ChIP: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_ChIPseq/"
+   Output_figures_CDX_Bulk: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/CDX_bulk_RNAseq/"
+   Input_data: "/data/cep/acatozzi/ATOH1_ChIPSeq/Input_data/"
+   Gene_signatures: "/data/cep/acatozzi/gene_signatures/"
+output: html_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	fig.align = "left",
+	fig.height = 8,
+	fig.width = 6,
+	message = FALSE,
+	warning = FALSE,
+	include = FALSE
+)
+
+library(DiffBind)
+library(RColorBrewer)
+library(pheatmap)
+library(tidyverse)
+library(viridisLite)
+library(genomation)
+library(plyranges)
+library(ChIPseeker)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(ggpubr)
+library(rtracklayer)
+library(enrichplot)
+library(profileplyr)
+library(SummarizedExperiment)
+library(ComplexHeatmap)
+library(colorspace)
+  
+heatmap_YlGnBu <- colorRampPalette(c("#ffffcc", "#41b6c4", "#0c2c84"))(n=300)
+YlGnBu <- colorRampPalette(c("wheat1", "lightskyblue1", "dodgerblue4"))(n=300)
+
+library(BiocParallel)
+#BiocParallel::register(MulticoreParam(workers = 8))
+#BPPARAM = BiocParallel::bpparam()
+
+```
+
+
+```{r setup, include = TRUE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+#NF pipeline new
+new_CDX_folder = "/data/cep/CDX_Model_NGS_Data/RNA_Seq/"
+
+Nextflow_output = "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_RNAseq/results_human/"
+
+Design_files = "/data/cep/acatozzi/ATOH1_ChIPSeq/alessias-chip-analysis/Data/"
+
+Output_data_ATOH1_KD_RNAseq = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_KD_RNAseq/"
+
+Output_data_ATOH1_ChIP = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_ChIPseq/"
+
+Output_data_CDX_Bulk = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/CDX_bulk_RNAseq/"
+
+Output_data_BETA = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA/"
+
+RDS_output = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/RDSfiles/"
+
+Output_figures_ATOH1_KD_RNAseq = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_KD_RNAseq/"
+
+Output_figures_ATOH1_ChIP = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_ChIPseq/"
+
+Output_figures_CDX_Bulk = "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/CDX_bulk_RNAseq/"
+
+Input_data = "/data/cep/acatozzi/ATOH1_ChIPSeq/Input_data/"
+
+Gene_signatures = "/data/cep/acatozzi/gene_signatures/"
+
+# change this when Sam re-runs Nextflow pipeline and fixes decoder table
+
+CDX_bulk_input_data = "/data/cep/acatozzi/Bulk_CDX_RNAseq/Data/"
+
+```
+
+```{r}
+
+# import useful files
+
+gtfFile = "/data/cep/CDX_Model_NGS_Data/Reference/Homo_sapiens.GRCh38.99.gtf"
+txdb <- GenomicFeatures::makeTxDbFromGFF(gtfFile)
+
+gr.ann <- import(gtfFile)
+geneLookup <- tibble(geneId = gr.ann$gene_id, geneName = gr.ann$gene_name, geneBiotype = gr.ann$gene_biotype) %>% distinct()
+
+geneLookup$entrez = mapIds(org.Hs.eg.db,
+                    keys=geneLookup$geneId, 
+                    column="ENTREZID",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+peakfiles <- list(CDX19_ShRen_DOX_IP_Ptech = paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShRen_DOX_IP_Ptech_R1_peaks.narrowPeak"), 
+CDX19_ShATOH1_3_DOX_IP_Ptech = paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShATOH1_3_DOX_IP_Ptech_R1_peaks.narrowPeak"), 
+CDX19_ShRen_DOX_IP_SY0287 = paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShRen_DOX_IP_SY0287_R1_peaks.narrowPeak"),
+CDX19_ShATOH1_3_IP_SY0287 = paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShATOH1_3_IP_SY0287_R1_peaks.narrowPeak"),
+CDX19_ShATOH1_3_DOX_IP_SY0287 = paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShATOH1_3_DOX_IP_SY0287_R1_peaks.narrowPeak"))
+
+```
+
+
+# Aim of the analysis
+
+This script is made for processing ChIPseq data. I have sequenced chromatin immunoprecipitation from CDX17P with or without ATOH1 depletion (via shATOH1#3). Protocol controls include histone mark (H3K4me3), ASCL1 IP in H146 cells, which express high levels of ASCL1, and input samples.
+
+# Alignment, QC and peak calling with nextflow
+
+Design file: includes information on IP conditions, replicates and reference (input) samples.
+Note: It is a .csv file that cannot be generated in excel due to hidden characters included in the conversion from .xlsx to .csv; generate this design file in sublime text.
+
+Raw sequencing data is in: /mnt/gpfs2/facilities/sequencers/seq.08/210126_A01065_0033_BHY72CDRXX/Unaligned_CD30
+
+
+```{bash, eval = FALSE}
+
+# -----------------------------------------------------------------------------------------------------------------------------
+# NOTES before you start: Nextflow produces lots of hidden files; to check for hidden files in directory type ll -a in terminal; 
+# go to scrath as working directory, there Nextflow will produce the results.
+# Once the nextflow starts and enters bagkground with nohup, ctrl+Z to free the terminal and let the pipeline run in background. 
+# type bg to make sure it's running in background.
+# monitor jobs with qstat; to monitor the job more closely cat nohup.out.
+# -----------------------------------------------------------------------------------------------------------------------------
+
+# symlink raw sequencing data to a folder as specified in the design file - no need to hard copy all of the sequencing data
+
+ln -s .../Unaligned/*.fastq.gz /pathToDirectory/
+
+## to be run in terminal
+
+source /data/cep/CDX_Model_NGS_Data/CDX_Model_Git_Repo/RNAseq_data/nextflowModules.sh
+
+# make sure you're keeping the nf-core chipseq pipeline up to date
+
+nextflow pull nf-core/chipseq
+
+# no hup = run even with terminal/connection off
+# Need to specify Narrow peak if we want MACS2 to run Narrow Peak caller - default is Broad peak
+
+nohup nextflow run nf-core/chipseq \ 
+--input /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/DesignFile_ChIP.csv \
+-c /data/cep/CDX_Model_NGS_Data/CDX_Model_Git_Repo/RNAseq_data/nextflow.config \
+--genome GRCh38_v99 \
+-profile singularity \
+--macs_gsize 2.7e9 \
+--narrow_peak
+
+```
+
+## Understanding MultiQC
+
+The library presents with few duplicate reads - i.e. we have not over- or under-sequenced the samples. Becuase we have performed paired end sequencing, we have ~60M reads per sample. All reads have high quality scores.
+During trimming by cutadapt the vast majority of sequences are cut of 1 base, this being most likely an A; as a consequence of this trimming, per base sequence content fails QC because of underepresented As in the reads.
+GC content is lower than 50% but this is expected as TFs bind to intergenic regions that are A and T rich.
+Greater than 98% of the reads are mapped to human genome; a small proportion of reads maps to Chromosome Y (this is expected, as CDX17P was derived from female patient).
+Complexity curve supports the fact that we have not under- or over-sequenced the samples and are just out of the linear range of detection.
+The library was fragmented in 150 bp, meaing that by sequencing 100 bp paired end reads, we have an overlap of 50 bp in a 150 bp long DNA fragment.
+Fingerprint plot shows how much of the genome has been covered by the sequencing: ~5% of the genome has not been sequenced at all; ~30% of reads fall within 1% of the region, showing that sequence-specific enrichment has been achieved.
+
+## Peak calling
+
+*Broad peak*
+Peak count: ASCL1 >60K; ATOH1 20-30K; H3K4me3 15-20K; 
+FRiP score indicates the fraction of reads in peaks; if this is <1% the dataset will be scrutinized by ENCODE. In this dataset the minimum FRiP is 3%. 
+The normalized and relative cross-correlation plots (NSC and RSC) show the signal to noise ratio: the higher the NSC, the better the signal; NSC <1.05 could mean low signal or few peaks.
+
+*Narrow peak*
+Peak count: ASCL1 >60K; ATOH1 11-27K; H3K4me3 15-20K.
+
+## Comments: mouse filtering and NGS checkmate
+
+Sam has run NGS checkmate and results are as expected. 
+The mouse filtering pipeline only recognized 2% of reads as mouse specific (or non specific to human). Because these are present in the H146 cells, which have never been grown into a mouse, these are likely to be multimapping reads or reads that don't map perfect to the human genome and are likely to be excluded from the analysis anyway by Nextflow. We therefore have decided to go forward with the human alignment without further filtering.
+
+## QC with ChIP QC
+
+We have performed most of the QC via Nextflow but here is another way of checking Frip scores.
+
+```{r eval=FALSE, include=TTRUE}
+
+experiment = ChIPQC(samples, annotation="hg38")
+ChIPQCreport(experiment, reportName="AllSamples", reportFolder="ChIPQCreport")
+
+```
+
+
+# Downstream analysis
+
+## Dynamic range of peak signal value
+
+Here I am loading the NarrowPeak files and plotting the signal value of each peak. The signal value is a measurement of mean enrichment of each peak region. 
+
+```{r peaks overview by signal value, fig.height=5, fig.width=7}
+
+peaks <- list()
+
+peaks$CDX19_ShRen_DOX_IP_SY0287 <- readNarrowPeak(paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShRen_DOX_IP_SY0287_R1_peaks.narrowPeak"))
+peaks$CDX19_ShRen_DOX_IP_Ptech <- readNarrowPeak(paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShRen_DOX_IP_Ptech_R1_peaks.narrowPeak"))
+peaks$CDX19_ShATOH1_3_IP_SY0287 <- readNarrowPeak(paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShATOH1_3_IP_SY0287_R1_peaks.narrowPeak"))
+peaks$CDX19_ShATOH1_3_DOX_IP_Ptech <- readNarrowPeak(paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShATOH1_3_DOX_IP_Ptech_R1_peaks.narrowPeak"))
+peaks$CDX19_ShATOH1_3_DOX_IP_SY0287 <- readNarrowPeak(paste0(params$Nextflow_output_ChIPSeq, "bwa/mergedLibrary/macs/narrowPeak/CDX19_ShATOH1_3_DOX_IP_SY0287_R1_peaks.narrowPeak"))
+
+
+plot(sort(peaks$CDX19_ShRen_DOX_IP_Ptech$signalValue), ylim = c(0, 200), main = "CDX19_ShRen_DOX_IP_Ptech")
+plot(sort(peaks$CDX19_ShRen_DOX_IP_SY0287$signalValue), ylim = c(0, 200), main = "CDX19_ShRen_DOX_IP_SY0287")
+plot(sort(peaks$CDX19_ShATOH1_3_IP_SY0287$signalValue), ylim = c(0, 200), main = "CDX19_ShATOH1_3_IP_SY0287")
+plot(sort(peaks$CDX19_ShATOH1_3_DOX_IP_Ptech$signalValue), ylim = c(0, 200), main = "CDX19_ShATOH1_3_DOX_IP_Ptech")
+plot(sort(peaks$CDX19_ShATOH1_3_DOX_IP_SY0287$signalValue), ylim = c(0, 200), main = "CDX19_ShATOH1_3_DOX_IP_SY0287")
+
+```
+
+## Coverage plot
+
+```{r, fig.width=12, fig.height=8}
+
+#head(peaks$CDX19_ShRen_DOX_IP_SY0287)
+
+covplot(peaks[1:2], weightCol="score", chrs = 4, xlim = c(1:1000))
+
+#or chr = c(1:22, "X")
+
+```
+
+## Differential Binding
+
+A tool you can use to determine differentially bound regions between two experimental conditions is the R/Bioconductor package called DiffBind. It includes functions to support the processing of peak sets, including overlapping and merging peak sets, counting sequencing reads overlapping intervals in peak sets, and identifying statistically significantly differentially bound sites.
+
+Load the sample file, which includes the path to the Bam files and which control (input) sample each of them refers to.
+
+*Note: the results from DiffBind, specifically the function dba.report are calculated as follows:*
+*The metadata columns show the mean read concentration over all the samples (the default calculation uses log2 normalized read counts) and the mean concentration over the samples in each of the first group and second group. The Fold column shows the log fold changes (LFCs) between the two groups, as calculated by the DESeq2 analysis.*
+*A positive value indicates increased binding affinity in the Resistant group, and a negative value indicates increased binding affinity in the Responsive group. The final two columns give confidence measures for identifying these sites as differentially bound, with a raw p-value and a multiple-testing corrected FDR in the final column (also calculated by the DESeq2 analysis).*
+From: https://bioconductor.org/packages/release/bioc/vignettes/DiffBind/inst/doc/DiffBind.pdf
+
+
+```{r correlation heatmap before DB, fig.height=7, fig.width=4}
+
+# ----------------------------------------------------------------------------------------------------------------------------
+## Note: the csv design file needs to be written without spaces and without "".
+# ----------------------------------------------------------------------------------------------------------------------------
+
+samples <- read.csv(paste0(params$Design_files, "sampleSheet_ChIP_all.csv"))
+
+DBdata <- dba(sampleSheet = samples)
+
+DBdata
+
+dba.plotHeatmap(DBdata, cexRow = 2, cexCol = 2)
+
+# Because dba.plotheatmap does not plot all labels correctly, I will plot the correlation heatmap with pheatmap
+
+cor.matrix <- plot(DBdata)
+
+cor.matrix.info <- column_to_rownames(DBdata$samples, var = "SampleID")
+
+cor.matrix.info["H146_IP_ASCL1", "Condition"] <- NA
+cor.matrix.info["H146_IP_SY0287", "Condition"] <- NA
+
+corr.heatmap <- pheatmap::pheatmap((cor.matrix),
+                  color = brewer.pal(9, "YlGnBu"),
+                  border_color = "grey60",
+                  treeheight_row = 10,
+                  treeheight_col = 10,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,
+                  dendrogram = "both",
+                  fontsize_col = 12,
+                  cellwidth = 16.5,
+                  cellheight = 16.5,
+                  show_rownames = FALSE,
+                  cutree_cols = 4,
+                  cutree_rows = 4,
+                  annotation_col = dplyr::select(cor.matrix.info, Factor, Tissue, Condition), 
+                  annotation_colors = list(Factor = c(ASCL1 = "forestgreen", H3K4me3 = "gold", Ptech = "coral4", SY0287 = "coral"), Tissue = c(CDX19 = "lightskyblue1", H146 = "cornflowerblue"), Condition = c(WT = "midnightblue", KD = "orchid", "NA" = "white")),
+                  main = "Correlation plot")
+
+```
+
+
+```{r export correlation heatmap before DBA, message=FALSE, warning=FALSE, eval = FALSE}
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_correlation_heatmap_beforeDBA.pdf"), 
+    width = 4,
+    height = 7)
+
+corr.heatmap
+
+dev.off()
+```
+
+### correlation heatmap without H146
+
+```{r}
+
+samples_filter <- dplyr::filter(samples, Condition %in% c("WT", "KD") & Factor %in% c("Ptech", "SY0287", "H3K4me3"))
+
+filter <- dba(sampleSheet = samples_filter)
+
+filter
+
+
+dba.plotHeatmap(filter, cexRow = 2, cexCol = 2)
+
+# correlation heatmap with pheatmap
+
+cor.matrix.filtered <- plot(filter)
+
+cor.matrix.info.filtered <- column_to_rownames(filter$samples, var = "SampleID")
+
+corr.heatmap.filtered <- pheatmap::pheatmap((cor.matrix.filtered),
+                  color = brewer.pal(9, "YlGnBu"),
+                  border_color = "grey60",
+                  treeheight_row = 10,
+                  treeheight_col = 10,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,
+                  dendrogram = "both",
+                  fontsize_col = 12,
+                  cellwidth = 16.5,
+                  cellheight = 16.5,
+                  show_rownames = FALSE,
+                  cutree_cols = 2,
+                  cutree_rows = 2,
+                  annotation_col = dplyr::select(cor.matrix.info.filtered, Factor, Tissue, Condition), 
+                  annotation_colors = list(Factor = c(Ptech = "coral4", SY0287 = "coral", H3K4me3 = "gold"), Tissue = c(CDX19 = "lightskyblue1"), Condition = c(WT = "midnightblue", KD = "orchid")),
+                  main = "Correlation plot")
+
+```
+
+```{r export correlation heatmap before DBA, message=FALSE, warning=FALSE, eval = FALSE}
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_correlation_heatmap_beforeDBA_CDX19Only.pdf"), 
+    width = 4,
+    height = 7)
+
+corr.heatmap.filtered
+
+dev.off()
+
+```
+
+
+```{r, fig.height=6, fig.width=4}
+
+samples_ATOH1 <- dplyr::filter(samples, Condition %in% c("WT", "KD") & Factor %in% c("Ptech", "SY0287"))
+
+DBdata_ATOH1 <- dba(sampleSheet = samples_ATOH1)
+
+DBdata_ATOH1
+
+dba.plotHeatmap(DBdata_ATOH1, cexRow = 2, cexCol = 2)
+
+# correlation heatmap with pheatmap
+
+cor.matrix.ATOH1 <- plot(DBdata_ATOH1)
+
+cor.matrix.info.ATOH1 <- column_to_rownames(DBdata_ATOH1$samples, var = "SampleID")
+
+pheatmap::pheatmap((cor.matrix.ATOH1),
+                  color = brewer.pal(9, "YlGnBu"),
+                  border_color = "grey60",
+                  treeheight_row = 10,
+                  treeheight_col = 10,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,
+                  dendrogram = "both",
+                  fontsize_col = 12,
+                  cellwidth = 16.5,
+                  cellheight = 16.5,
+                  show_rownames = FALSE,
+                  cutree_cols = 2,
+                  cutree_rows = 2,
+                  annotation_col = dplyr::select(cor.matrix.info.ATOH1, Factor, Tissue, Condition), 
+                  annotation_colors = list(Factor = c(Ptech = "coral4", SY0287 = "coral"), Tissue = c(CDX19 = "lightskyblue1"), Condition = c(WT = "midnightblue", KD = "orchid")),
+                  main = "Correlation plot")
+
+```
+
+*NOTE: Nextflow does not filter out black listed regions automatically.*
+*NOTE: dba.blacklist does not work yet*
+
+Here I am setting the contrasts taking into account the different antibodies as a confounding factor. To perform the analysis in DiffBind v3 I also need to set blacklisted regions to FALSE as this command still does not work properly, plus it might not be correct to filter out blacklisted regions at this stage. 
+
+```{r, fig.height=7, fig.width=5}
+#DBdata_ATOH1 <- dba.blacklist(DBdata_ATOH1, blacklist="BSgenome.Hsapiens.UCSC.hg38", greylist="BSgenome.Hsapiens.UCSC.hg19")
+
+## what's the difference between grey and blacklist!? ##
+
+# if summits = TRUE, peaks will be of 400 bp width
+DBdata_ATOH1 <- dba.count(DBdata_ATOH1, bParallel = TRUE, summits = FALSE)
+
+DBdata_ATOH1 <- dba.normalize(DBdata_ATOH1)
+
+DBdata_ATOH1 <- dba.contrast(DBdata_ATOH1, categories=c(DBA_FACTOR,DBA_CONDITION), minMembers=2)
+
+dba.show(DBdata_ATOH1, bContrasts = T)
+
+DBdata_ATOH1 <- dba.analyze(DBdata_ATOH1, method=DBA_ALL_METHODS, bParallel=TRUE, bBlacklist = FALSE, bGreylist = FALSE)
+
+DBdata_ATOH1
+
+#saveRDS(DBdata_ATOH1, file = "/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/RDSfiles/DBdata_ATOH1.rds")
+
+```
+
+
+```{r eval=FALSE, fig.height=7, fig.width=5, include=TRUE}
+
+## Only run to load the RDS file into R
+
+DBdata_ATOH1 <- readRDS(file = paste0(params$RDS_output, "DBdata_ATOH1.rds"))
+
+```
+
+### Correlation heatmap between conditions
+
+```{r plot correlation heatmap after DB, fig.height=7, fig.width=5}
+
+plot(DBdata_ATOH1)
+
+# Plot correlation matrix with pheatmap
+
+ATOH1_DB_cor_matrix <- plot(DBdata_ATOH1)
+
+corr.heatmap.DBA <- pheatmap::pheatmap((ATOH1_DB_cor_matrix),
+                  color = brewer.pal(9, "YlGnBu"),
+                  border_color = "grey60",
+                  treeheight_row = 10,
+                  treeheight_col = 10,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,
+                  dendrogram = "both",
+                  fontsize_col = 12,
+                  cellwidth = 16.5,
+                  cellheight = 16.5,
+                  show_rownames = FALSE,
+                  cutree_cols = 2,
+                  cutree_rows = 2,
+                  annotation_col = dplyr::select(cor.matrix.info.ATOH1, Factor, Tissue, Condition), 
+                  annotation_colors = list(Factor = c(Ptech = "orange", SY0287 = "coral"), Tissue = c(CDX19 = "lightskyblue1"), Condition = c(WT = "midnightblue", KD = "orchid")),
+                  main = "Differential binding correlation plot")
+```
+
+```{r export heatmap pdf, message=FALSE, warning=FALSE, eval = FALSE}
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_correlation_heatmap_afterDBA.pdf"), 
+    width = 4,
+    height = 7)
+
+corr.heatmap.DBA
+
+dev.off()
+
+```
+
+```{r Export DBA results}
+
+DBresults <- dba.report(DBdata_ATOH1, method=DBA_DESEQ2, contrast = 2)
+
+DBresults_export <- as.data.frame(DBresults) %>%
+  rownames_to_column(var = "peak_number") %>%
+  arrange("p-value")
+
+DBresults_export$seqnames <- paste0("chr", DBresults_export$seqnames)
+
+#write_tsv(DBresults_export, file=paste0(params$Output_data_ATOH1_ChIP, "DBresults_ATOH1_sortedbyP.tsv"))
+
+```
+
+### Heatmap of top 1000 DB sites
+
+```{r Heatmap of top 1000 DB sites, fig.height=8, fig.width=5}
+
+WTvsKD_DB_heatmap <- dba.plotHeatmap(DBdata_ATOH1, contrast=2, correlations=FALSE, method = DBA_DESEQ2, colScheme = YlGnBu,  cexRow = 2, cexCol = 2, maxSites = 1000)
+
+plotData <- WTvsKD_DB_heatmap %>%
+  as.data.frame() %>% 
+  select(starts_with("CDX19"))
+
+DB_regions <- pheatmap::pheatmap(plotData, 
+                  color = heatmap_YlGnBu,
+                  border_color = "grey60",
+                  treeheight_row = 10,
+                  treeheight_col = 10,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,
+                  dendrogram = "both",
+                  show_rownames = FALSE,
+                  cutree_cols = 2,
+                  annotation_col = dplyr::select(cor.matrix.info.ATOH1, Factor, Tissue, Condition), 
+                  annotation_colors = list(Factor = c(Ptech = "coral4", SY0287 = "coral"), Tissue = c(CDX19 = "lightskyblue1"), Condition = c(WT = "midnightblue", KD = "orchid")),
+         main = "Differentially bound regions (top 1000)")
+
+```
+
+DESeq2 identifies 17496 differentially bound regions, out of 25304 overall identified peaks.
+
+```{r export pdf of top 1000 DB sites heatmap, eval = FALSE, message=FALSE, warning=FALSE}
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_DB_heatmap.pdf"), 
+    width = 5,
+    height = 8)
+
+DB_regions
+
+dev.off()
+
+```
+
+
+```{r, fig.height=6, fig.width=8}
+
+dba.plotMA(DBdata_ATOH1, contrast = 2, method = DBA_DESEQ2)
+
+dba.plotVolcano(DBdata_ATOH1, contrast = 2, method = DBA_DESEQ2)
+
+dba.plotVolcano(DBdata_ATOH1, contrast = 1, method = DBA_DESEQ2)
+
+dba.plotPCA(DBdata_ATOH1, contrast = 2, label = DBA_FACTOR)
+
+dba.plotPCA(DBdata_ATOH1, contrast = 1, label = DBA_CONDITION)
+
+#dba.plotBox(DBdata_ATOH1, contrast = 2,  method = DBA_DESEQ2)
+
+```
+
+The majority of peaks identified in ATOH1 competent cells are found in all 3 replicates, independently of which anitbody is used for the pull down. Specifically, these binding sites, common to all 3 ATOH1 competent replicates are 16039.
+
+```{r export PDF of PCA and volcano plot, fig.height=6, fig.width=8, eval = FALSE}
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_DB_volcanoPlot.pdf"), 
+    width = 8,
+    height = 6)
+
+dba.plotVolcano(DBdata_ATOH1, contrast = 2, method = DBA_DESEQ2, dotSize = 0.3)
+
+dev.off()
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_DB_PCA_plot.pdf"), 
+    width = 8,
+    height = 6)
+
+dba.plotPCA(DBdata_ATOH1, contrast = 2, label = DBA_FACTOR)
+
+dev.off()
+
+```
+
+### Correlation heatmap between antibodies
+
+Note: contrast = 1 will pull out results in the comparison of the two antibodies (Ptech vs SY0287); contrast = 2 will pull out results on WT vs KD samples.
+
+```{r, fig.height=6, fig.width=4}
+
+SY0287vsPtech_DB_heatmap <- dba.plotHeatmap(DBdata_ATOH1, contrast=1, correlations=FALSE, method = DBA_DESEQ2, colScheme = YlGnBu,  cexRow = 2, cexCol = 2)
+
+plotData <- SY0287vsPtech_DB_heatmap %>%
+  as.data.frame() %>% 
+  select(starts_with("CDX19"))
+
+plotData
+
+DB_regions <- pheatmap::pheatmap(plotData, 
+                  color = heatmap_YlGnBu,
+                  border_color = "grey60",
+                  treeheight_row = 10,
+                  treeheight_col = 10,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,
+                  dendrogram = "both",
+                  show_rownames = FALSE,
+                  cutree_cols = 2,
+                  annotation_col = dplyr::select(cor.matrix.info.ATOH1, Factor, Tissue, Condition), 
+                  annotation_colors = list(Factor = c(Ptech = "coral4", SY0287 = "coral"), Tissue = c(CDX19 = "lightskyblue1"), Condition = c(WT = "midnightblue", KD = "orchid")),
+         main = "Differentially bound regions \n SY01287 vs Ptech")
+
+
+```
+DeSeq2 only identifies 21 regions as differentially bound between SY0287 and Ptech antibodies.
+
+### Peak overlap analysis
+
+```{r}
+
+olap.rate <- dba.overlap(DBdata_ATOH1, mode=DBA_OLAP_RATE, method = DBA_DESEQ2)
+
+olap.rate
+
+plot(olap.rate,type='b',ylab='# peaks', 
+     xlab='Overlap at least this many peaksets')
+
+```
+
+
+```{r peak overlap between antibodies and conditions, fig.height=7, fig.width=7}
+
+#dba.plotVenn(DBdata_ATOH1, DBdata_ATOH1$masks$WT, main = "Binding site overlap across ATOH1 competent samples", label1 = "ShRen +DOX Ptech", label2 = "ShRen +DOX SY0287", label3 = "ShATOH1#3 -DOX SY0287")
+
+dba.plotVenn(DBdata_ATOH1, DBdata_ATOH1$masks$WT)
+
+dba.plotVenn(DBdata_ATOH1, DBdata_ATOH1$masks$SY0287)
+
+dba.plotVenn(DBdata_ATOH1, DBdata_ATOH1$masks$Ptech)
+
+```
+
+```{r export peaks overlap, message=FALSE, warning=FALSE}
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_sites_overlap_WT.pdf"), 
+    width = 8,
+    height = 6)
+
+dba.plotVenn(DBdata_ATOH1, DBdata_ATOH1$masks$WT)
+
+dev.off()
+
+```
+
+## Peaks annotation
+
+Here we use ChIPseeker to annotate peaks in each sample first, and then to annotate the differentially bound regions.
+
+
+
+```{r}
+
+#DBresults %>% as_tibble()
+
+peakAnnoList <- map(peakfiles, annotatePeak, TxDb=txdb, 
+                       tssRegion=c(-1000, 1000), verbose=FALSE)
+
+
+dds.peaks <- annotatePeak(DBresults, TxDb = txdb, 
+                          tssRegion = c(-1000, 1000), verbose = FALSE)
+
+dds.peaks %>% as_tibble()
+
+```
+
+*Note: bug in annotation package: downstream regions are calculated as <= 3Kb from TSS (not 300 bp).*
+See https://guangchuangyu.github.io/2014/10/multiple-annotation-in-chipseeker/
+
+### Export with chromosome location
+
+```{r}
+
+library(plyranges)
+
+chr_location_export <- dds.peaks %>%
+  as_tibble() %>%
+  mutate(chr_location = paste0("chr", seqnames, ":", start, "-", end), chr = paste0("chr", seqnames), peaknumer = peaknumber) %>%
+  left_join(dplyr::rename(geneLookup, geneId = gene_id), by = "geneId") %>% 
+	arrange(p.value) %>%
+  dplyr::select(chr_location, chr, start, end, everything()) %>%
+  arrange(p.value)
+
+#write_tsv(chr_location_export %>% as_tibble(), file=paste0(Output_data_ATOH1_ChIP, "DBresults_ATOH1_annotated.tsv"))
+
+```
+
+## DB peaks distribution
+
+```{r, fig.width=8, fig.height=4}
+
+plotAnnoBar(dds.peaks)
+
+plotDistToTSS(dds.peaks, title="Distribution of transcription factor-binding loci \n relative to TSS")
+
+plotAnnoPie(dds.peaks)
+
+vennpie(dds.peaks)
+
+```
+
+```{r export peak disttribution charts to pdf, message=FALSE, warning=FALSE, eval=FALSE}
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_DB_Pie_chart.pdf"), 
+    width = 8,height = 8)
+
+plotAnnoPie(dds.peaks)
+
+dev.off()
+
+pdf(paste0(Output_figures_ATOH1_ChIP, "ChIP_DB_peaks_dist_from_TSS.pdf"), 
+    width = 12, height = 3)
+
+plotDistToTSS(dds.peaks, title="Distribution of transcription factor-binding loci \n relative to TSS")
+
+dev.off()
+
+```
+
+#### Make bar chart of peak distance to TSS
+
+Here I am rearranging the data for plotting a bar chart instead of a pie chart. In doing so, I am also combining intronic regions.
+
+```{r, fig.height=3, fig.width=12}
+
+annoStats <- as.data.frame(dds.peaks@annoStat)
+
+exons <- annoStats %>% subset(Feature %in% c("1st Exon", "Other Exon")) 
+sum <- sum(exons$Frequency)
+exons <- exons %>% 
+  rbind(data.frame(Feature = "Exon", Frequency = sum)) %>%
+   filter(Feature == "Exon")
+
+introns <- annoStats %>% subset(Feature %in% c("1st Intron", "Other Intron")) 
+sum <- sum(introns$Frequency)
+introns <- introns %>% 
+  rbind(data.frame(Feature = "Intron", Frequency = sum)) %>%
+  filter(Feature == "Intron")
+
+annoStats <- annoStats %>% filter(Feature %in% c("Promoter", "5' UTR", "3' UTR", "Downstream (<=300)", "Distal Intergenic")) %>%
+                                    rbind(introns, exons)
+
+annoStats$dataset <- c(rep("ATOH1_DB_peaks", 7))
+
+annoStats_plot <- ggplot(annoStats, aes(x = dataset, y = Frequency, fill = Feature)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = brewer.pal(7, "Set3")) +
+  theme_classic() +
+  coord_flip() +
+  theme(axis.title.y = element_blank()) +
+  theme(legend.text = element_text(size = 14), legend.title = element_text(size = 16)) +
+  theme(axis.title.x = element_text(size = 14), axis.text = element_text(size = 12))
+  
+ggsave("/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Output_figures/ATOH1_ChIPseq/ChIP_DB_peak_annotation.pdf", annoStats_plot, width = 12, height = 3)  
+
+```
+
+*Note: bug in annotation package: downstream regions are calculated as <= 3Kb from TSS (not 300 bp).*
+See https://guangchuangyu.github.io/2014/10/multiple-annotation-in-chipseeker/
+
+
+#### Peak distance from TSS bar chart
+
+```{r, fig.height=6, fig.width=10}
+
+peakDist <- as.data.frame(dds.peaks@anno)
+
+distanceColumn="distanceToTSS"
+
+#peakDist[, distanceColumn]
+
+peakDist$Feature <- NA
+limit <- c(0, 1000, 3000, 5000, 10000, 100000)
+lbs <- c("0-1kb", "1-3kb", "3-5kb", "5-10kb", "10-100kb", ">100kb")
+for (i in 1:length(limit)) {
+  if (i < length(limit)) {
+    peakDist$Feature[ abs(peakDist[, distanceColumn]) >= limit[i] & abs(peakDist[,distanceColumn]) < limit[i+1] ] <- lbs[i]
+  } else {
+    peakDist$Feature[abs(peakDist[,distanceColumn]) > limit[i]] <- lbs[i]
+  }
+}
+peakDist$Feature <- factor(peakDist$Feature, levels=lbs)
+
+peakDist$sign <- sign(peakDist[,distanceColumn])
+
+DistToTSS <- peakDist %<>% group_by(Feature, sign) %>%
+  summarise(freq = length(Feature))
+
+DistToTSS$freq = DistToTSS$freq/sum(DistToTSS$freq)
+DistToTSS$freq = DistToTSS$freq * 100
+
+label <- ifelse(DistToTSS$sign == 0, "TSS",
+                ifelse(DistToTSS$sign == -1, paste0("-", DistToTSS$Feature), paste0("+", DistToTSS$Feature)))
+
+DistToTSS$label <- label 
+
+DistToTSS$label <- factor(DistToTSS$label,
+                  levels = c("->100kb", "-10-100kb", "-5-10kb", "-3-5kb", "-1-3kb", "-0-1kb", "TSS", "+0-1kb", "+1-3kb", "+3-5kb", "+5-10kb", "+10-100kb", "+>100kb"))
+
+DistToTSS
+
+#divergingx_palettes(n = 7, plot = TRUE)
+
+#cols = divergingx_hcl("Temps", n = 13)
+
+cols = divergingx_hcl("Temps", n = 7)
+
+#cols
+
+#cols <- c("#089392", "#13A491", "#40B48B", "#6CC382", "#9DCD84", "#C5D88C", "#EAE29C", "#C5D88C", "#9DCD84", "#6CC382", "#40B48B","#13A491","#089392")
+
+cols <- c("#40B48B", "#40B48B", "#9DCD84", "#EAE29C", "#EAB672", "#E6866A", "#CF597E", "#E6866A", "#EAB672", "#EAE29C", "#9DCD84", "#40B48B","#40B48B" )
+
+# plot bar graph of % peaks in each window of interest
+
+ 
+hundKB <- ggplot(DistToTSS, aes(x = label, y = freq)) +
+  geom_col(fill = "darkslateblue") +
+  scale_fill_manual(values = cols) +
+  theme_classic() +
+  theme(axis.text = element_text(size =12),
+        axis.title = element_text(size =16), 
+        title = element_text(size = 16)) +
+  xlab("Peak distance to TSS") +
+  ylab("Frequency") +
+  ggtitle("ATOH1 Peaks")
+  
+  
+#ggsave(paste0(Output_figures_ATOH1_ChIP, "ChIP_DB_peaks_dist_toTSS_barchart.pdf"), hundKB, width = 10, height = 6)
+
+```
+
+
+```{r, fig.height=6, fig.width=6}
+
+DistToTSS$regroup <- ifelse(DistToTSS$label %in% c("->100kb", "+>100kb", "-10-100kb", "+10-100kb"), ">10 Kb", 
+                         ifelse(DistToTSS$label == "TSS", "TSS", "<10 Kb"))
+
+DistToTSS$regroup <- factor(DistToTSS$regroup,
+                  levels = c("TSS", "<10 Kb", ">10 Kb"))
+
+DistToTSS
+
+# plot bar graph of peaks <10 Kb or >10 Kb from TSS
+
+tenKB <- 
+  ggplot(DistToTSS, aes(x = regroup, y = freq, fill = regroup)) +
+  geom_col(fill = "darkslateblue") +
+  scale_fill_manual(values = c("#CF597E", "#EAB672", "#40B48B")) +
+  theme_classic() +
+  theme(axis.text = element_text(size =14), axis.title = element_text(size =16), title = element_text(size = 16)) +
+  xlab("Peak distance to TSS") +
+  ylab("Frequency") +
+  ggtitle("ATOH1 Peaks")
+  
+ggsave(paste0(Output_figures_ATOH1_ChIP, "ChIP_DB_peaks_dist_toTSS_barchart_10Kb_intervals.pdf"), tenKB, width = 10, height = 6)
+
+```
+
+### Distribution of genes bound by ATOH1
+
+Here I want to calculate how many gene types are bound by ATOH1 - how many protein coding, non coding etc?
+
+```{r, fig.height=6, fig.width=10}
+
+peaks.sig <- dds.peaks@anno %>% 
+	as_tibble() %>% 
+  mutate(chr_location = paste0("chr", seqnames, ":", start, "-", end), chr = paste0("chr", seqnames)) %>%
+	filter(p.value < 0.05, Fold < 0) %>% 
+	left_join(geneLookup, by = "geneId") %>% 
+	arrange(p.value)
+
+print(paste0("the analysis has identified 17735 differentially bound regions. The DB peaks have been mapped to ", length(peaks.sig$geneName), " genes"))
+
+print(paste0("Excluding duplicated genes, where >1 DB peak was found, ATOH1 binding peaks are found in ", length(unique(peaks.sig$geneName)), " genes"))
+
+DB_protein_coding <- filter(peaks.sig, geneBiotype == "protein_coding")
+
+print(paste0("Of these genes, ", length(unique(DB_protein_coding$geneName)), " are protein coding"))
+
+# plot distribution of genes bound by ATOH1
+
+tmp <- peaks.sig %>%
+  dplyr::select(geneName, geneBiotype) %>%
+  distinct(geneName, .keep_all = T)
+
+plot <- table(tmp$geneBiotype)
+
+ggplot(as.data.frame(plot), aes(x="", y=Freq, fill=Var1)) +
+  geom_bar(width = 1, stat = "identity", color = "black") +
+  coord_polar("y", start=0) +
+  theme_void() +
+  theme(axis.text.x=element_text(size = 12), 
+        axis.title = element_blank())
+
+```
+
+*Important* 
+*The analysis has identified 14797 DB regions/peaks in ATOH1 competent vs ATOH1 depleted CDX19 cells. The analysis has taken into account the confounding factor of the antibody used for pull down (see design of DBA object). 17735 out of 14797 regions have been mapped to a target gene. Excluding duplicated genes, for which >1 ATOH1 binding site has been found, the DB peaks have been mapped to 11183 unique genes. Of these genes, only 5801 are protein coding genes.*
+
+### Target gene enrichment in peaks
+
+```{r}
+
+genesOfInterest <- c("CHGA", "DLL3", "DLL4", "ATOH1", "NEUROD1", "NOTCH1", "GFI1", "POU4F3", "HES5", "HES1", "MYCL", "GUCY1A", "GUCY1B")
+
+peaks.sig %>% 
+  filter(geneName %in% genesOfInterest) %>% 
+  arrange(geneName) %>% 
+  select(geneName, geneBiotype, distanceToTSS, everything())
+
+```
+
+# GO enrichment analysis
+
+This enrichment is not based on a direction of change, it takes a list of genes that are significantly enriched for ATOH1 binding sites and calculates GO enrichment, without taking into account expression or binding affinity.
+
+```{r, fig.height=4, fig.width=8}
+
+ego.BP <- peaks.sig %>% 
+		filter(!(is.na(entrez))) %>%
+    filter(geneBiotype == "protein_coding") %>%
+		pull(entrez) %>% 
+		enrichGO(
+		    keyType = "ENTREZID", 
+		    OrgDb = org.Hs.eg.db, 
+		    ont = "BP", 
+		    pAdjustMethod = "BH", 
+		    qvalueCutoff = 0.05, 
+		    readable = TRUE)
+
+ego.kegg <- peaks.sig %>% 
+			filter(!(is.na(entrez))) %>% 
+      filter(geneBiotype == "protein_coding") %>%
+			pull(entrez) %>% 
+			enrichKEGG(organism = 'hsa',
+                 pvalueCutoff = 0.05)
+
+
+BP <- dotplot(ego.BP, showCategory = 50, font.size = 12, title = "Enriched GO biological process")
+Kegg <- dotplot(ego.kegg, showCategory = 10, font.size = 12, title = "Enriched in KEGG")
+
+BP
+Kegg
+
+ggsave(paste0(Output_figures_ATOH1_ChIP, "BP_dotplotClusterProfiler_top10.pdf"), BP, width = 8.5, height = 3)
+ggsave(paste0(Output_figures_ATOH1_ChIP, "KEGG_dotplotClusterProfiler_top10.pdf"), Kegg,  width = 7, height = 3)
+
+```
+
+# Plot heatmap profile on consensus peakset with profileplyr
+
+BamBigwig_to_ChIPprofile() takes a character vector of paths to bigWig files or BAM files in the ‘signalFiles’ argument. Note that the files for each function call must be all BAMs or all bigWigs and not a combination of the two. The ‘testRanges’ argument is must be a character vector of paths to BED files. The corresponding names for each BED file that will appear on visualizations involving the resulting profileplyr object can be set with the ‘testRanges_names’ argument.
+
+```{r eval=FALSE, include=TRUE}
+
+samples <- read.csv(paste0(params$Design_files, "sampleSheet_ChIP_all.csv"))
+
+samples_ATOH1 <- dplyr::filter(samples, Condition %in% c("WT", "KD") & Factor %in% c("Ptech", "SY0287"))
+
+bigwig_files <- c(paste0(params$Nextflow_output_ChIPSeq, "/bwa/mergedLibrary/bigwig/", "CDX19_ShRen_DOX_IP_Ptech_R1.bigWig"),
+                  paste0(params$Nextflow_output_ChIPSeq, "/bwa/mergedLibrary/bigwig/", "CDX19_ShATOH1_3_DOX_IP_Ptech_R1.bigWig"),
+                  paste0(params$Nextflow_output_ChIPSeq, "/bwa/mergedLibrary/bigwig/", "CDX19_ShRen_DOX_IP_SY0287_R1.bigWig"),
+                  paste0(params$Nextflow_output_ChIPSeq, "/bwa/mergedLibrary/bigwig/", "CDX19_ShATOH1_3_IP_SY0287_R1.bigWig"),
+                  paste0(params$Nextflow_output_ChIPSeq, "/bwa/mergedLibrary/bigwig/", "CDX19_ShATOH1_3_DOX_IP_SY0287_R1.bigWig"))
+
+consensus_peakset <- c(paste0(params$Nextflow_output_ChIPSeq,"bwa/mergedLibrary/macs/narrowPeak/consensus/SY0287/SY0287.consensus_peaks.bed"), paste0(params$Nextflow_output_ChIPSeq,"bwa/mergedLibrary/macs/narrowPeak/consensus/Ptech/Ptech.consensus_peaks.bed"))
+
+chipProfile <- BamBigwig_to_chipProfile(bigwig_files, 
+                         consensus_peakset, 
+                         format = "bigwig",
+                         paired = TRUE,
+                         style = "percentOfRegion",
+                         samplename = samples_ATOH1$SampleID)
+
+#default options are nOfWindows = 100, distanceAround = 100
+
+saveRDS(chipProfile, file = paste0(params$RDS_output, "chipProfile_profileplyr.rds"))
+
+chipProfile
+
+```
+
+Convert to profileplyr object for further analysis.
+
+```{r eval=FALSE}
+
+chipProfile <- readRDS("/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/RDSfiles/chipProfile_profileplyr.rds")
+
+proplyrObj <- as_profileplyr(chipProfile)
+
+assays(proplyrObj)
+
+dim(proplyrObj)
+
+rowRanges(proplyrObj)[-(1:10)]
+
+sampleData(proplyrObj)
+
+params(proplyrObj)$rowGroupsInUse
+
+#as.tibble(rowRanges(proplyrObj)) %>%
+  #arrange(giID)
+
+#proplyrObj <- orderBy(proplyrObj, "score")
+
+#params(proplyrObj)$mcolToOrderBy
+
+```
+
+```{r eval=FALSE, include=TRUE}
+
+SY0287 <- proplyrObj %>%
+   subset(sgGroup == "SY0287.consensus_peaks.bed")
+
+Ptech <- proplyrObj %>%
+   subset(sgGroup == "Ptech.consensus_peaks.bed")
+
+heatmap_SY0287 <- generateEnrichedHeatmap(SY0287)
+
+heatmap_Ptech <- generateEnrichedHeatmap(Ptech)
+
+saveRDS(heatmap_SY0287, file = "/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/RDSfiles/Heatmap_Consensus_SY0287.rds")
+
+saveRDS(heatmap_Ptech, file = "/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/RDSfiles/Heatmap_Consensus_Ptech.rds")
+
+```
+
+Sanity check: check values and each heatmap with its own scale.
+
+```{r}
+
+##############
+# This will show the max value per peak in the bigwig file
+object_sumMat <- summarize(SY0287, 
+                           fun = rowMax, 
+                           output = "matrix") 
+
+# for example, for ATOH1 regions:
+object_sumMat[grep("chr4_9383*", rownames(object_sumMat)),]
+##############
+
+temp <- generateEnrichedHeatmap(SY0287, ylim = NULL)
+
+temp
+
+pdf(paste0(params$Output_figures_ATOH1_ChIP, "EnrichedHeatmap_ylimNULL.pdf"), width=10,height=6)
+
+draw(temp,                                 #/ plot the heatmap from above 
+     heatmap_legend_side = "bottom",     #/ we want the legend below the heatmap
+     annotation_legend_side = "bottom",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+
+dev.off()
+
+```
+
+
+This profileplyr object contains both consensus peaksets, SY0287 and Ptech. They are not merged together.
+
+```{r, eval=FALSE}
+
+heatmap <- generateEnrichedHeatmap(proplyrObj)
+
+class(heatmap)
+
+```
+
+```{r, fig.height=6, fig.width=10, eval=FALSE}
+
+rownames(sampleData(proplyrObj))
+
+# change names
+
+sample_heatmap <- c("ShRen_DOX_Ptech",
+                  "ShATOH1_3_DOX_Ptech",
+                  "ShRen_DOX_SY0287",
+                  "ShATOH1_3_SY0287",
+                  "ShATOH1_3_DOX_SY0287")
+
+heatmap_2 <- generateEnrichedHeatmap(proplyrObj, 
+                                     sample_names = sample_heatmap,
+                                     )
+```
+
+
+```{r eval=FALSE, fig.height=6, fig.width=10}
+
+# to save heatmnap to pdf
+
+pdf("/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Output/EnrichedHeatmap_SY0287_rep.pdf", width=10,height=6)
+
+draw(heatmap_SY0287,                                 #/ plot the heatmap from above 
+     heatmap_legend_side = "bottom",     #/ we want the legend below the heatmap
+     annotation_legend_side = "bottom",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+
+dev.off()
+
+pdf("/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Output/EnrichedHeatmap_Ptech.pdf")
+
+draw(heatmap_Ptech,                                 #/ plot the heatmap from above 
+     heatmap_legend_side = "bottom",     #/ we want the legend below the heatmap
+     annotation_legend_side = "bottom",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+
+dev.off()
+
+```

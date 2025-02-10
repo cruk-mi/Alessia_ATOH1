@@ -1,0 +1,58 @@
+#!/bin/bash
+
+#PBS -N NGSCheckMate_SarahAlessiaRNAseq
+#PBS -l nodes=1:ppn=32,mem=1tb
+#PBS -l walltime=01:00:00:00 
+#PBS -j oe
+#PBS -o /scratch/wsspaces/shumphrey-AlessiasData-0/NGSCheckMate.out
+
+workingDir=/scratch/wsspaces/shumphrey-AlessiasData-0/
+fastqDir=/data/cep/shumphrey/SarahAlessiaRNAseq/FASTQ/
+benchmarkDir=/data/cep/CDX_Model_NGS_Data/Benchmarks_NGSCheckMate/
+outputDir=${workingDir}NGSCheckMate/
+
+tmpFile=${workingDir}tmp.txt
+
+cd ${workingDir}
+mkdir -p ${outputDir}
+
+# Copy all benchmark .ncm files to the output directory to be included in the final dendrogram 
+cp ${benchmarkDir}* ${outputDir}
+
+# The input is a tab deliminated file with the paths to R1_FASTQ, R2_FASTQ, SAMPLENAME on each line.
+# This is an example how to create this information into a file. 
+
+# Get the read 1 FASTQ files
+ls ${fastqDir}*R1_001.fastq.gz > tempCol1.txt
+
+# Replace R1 with R2
+sed 's/_R1_001.fastq.gz/_R2_001.fastq.gz/g' tempCol1.txt > tempCol2.txt
+
+# Strip the file paths up to the slash and the ending
+sed 's,.*/,,' tempCol1.txt | sed 's/_R1_001.fastq.gz//g' -  > tempCol3.txt
+
+# Put the three lines together
+paste tempCol1.txt tempCol2.txt tempCol3.txt > ${tmpFile}
+rm tempCol1.txt
+rm tempCol2.txt
+rm tempCol3.txt
+
+# load the module
+ml apps/ngscheckmate
+
+# run the analysis. 
+# fastqList.txt is a tab deliminated file with the paths to R1_FASTQ, R2_FASTQ, SAMPLENAME for each line.
+# $NCM_HOME/SNP/SNP.pt is a binary file containing the sequences around ~11000 snps for the human exome.
+# $PBS_NP is the number of cores you've asked for in the job submission.
+# -N specifies a prefix to put on the file names that are output.
+
+python $NCM_HOME/ncm_fastq.py \
+-pt $NCM_HOME/SNP/SNP.pt \
+-l ${tmpFile} \
+-O ${outputDir} \
+-p $PBS_NP \
+-N NGSCheckMate_SarahAlessiaRNAseq
+
+rm ${tmpFile}
+
+echo "NGSCheckMate Complete :)"

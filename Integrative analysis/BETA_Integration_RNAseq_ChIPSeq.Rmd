@@ -1,0 +1,385 @@
+---
+title: "Integration of ATOH1 ChIPseq and RNAseq with BETA"
+author: "Alessia"
+date: "08/03/2021"
+params:
+   CDX_folder: "/data/cep/CDX_Model_NGS_Data/RNA_Seq/"
+   Nextflow_output_RNASeq: "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_RNAseq/results_human/"
+   Nextflow_output_ChIPSeq: "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_ChIP/results_human/"
+   Design_files: "/data/cep/acatozzi/ATOH1_ChIPSeq/alessias-chip-analysis/Data/"
+   Output_data_ATOH1_KD_RNAseq: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_KD_RNAseq/"
+   Output_data_ATOH1_ChIP: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_ChIPseq/"
+   Output_data_CDX_Bulk: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/CDX_bulk_RNAseq/"
+   Output_data_BETA: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA/"
+   RDS_output: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/RDSfiles/"
+   Output_figures_ATOH1_KD_RNAseq: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_KD_RNAseq/"
+   Output_figures_ATOH1_ChIP: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_ChIPseq/"
+   Output_figures_CDX_Bulk: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/CDX_bulk_RNAseq/"
+   Output_figures_BETA: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/BETA/"
+   Input_data: "/data/cep/acatozzi/ATOH1_ChIPSeq/Input_data/"
+   Gene_signatures: "/data/cep/acatozzi/gene_signatures/"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+library(tidyverse)
+library(GenomicRanges)
+library(plyranges)
+library(ggplot2)
+```
+
+# *Aim of the analysis*
+
+*Aim of this script is to run BETA on ATTOH1 ChIPSeq and ATTOH1 knockdown RNAseq files to obtain a list of direct targets and a prediction of whether ATOH1 is a repressive or activating TF.*
+
+# Create data suitable for BETA input
+
+BETA takes a bed file for ChIPseq and tab delimited file for RNAseq as inputs.
+
+## ChIPseq
+
+Here I am loading different bed files to compare the results and make sure results are reproducible. I have had issues with reproducing results from the BETA webserver and the BETA command line pipeline. This was due to the fact that the bed file I submitted only contained the genomic ranges and not the statistical values (FDR) adn it was sorted based on chromosome location, therefore the webserver was selecting the first 10000 peaks in alphabetical order (i.e. chr 1, 11, 12 etc) instead of filtering on the most significant peaks by FDR (because it was not provided). 
+
+It is recommended at this point to include FDR values and these can be obtained either by creating a bed file from DBresults (after differential binding analysis directly) or from the annotated dds peaks file (DBresults annotated by gene name and promoter/TSS/distal intergenic). 
+
+```{r message=FALSE}
+
+# bed from dds.peaks.annotated
+
+DB_peaks <- read_tsv(paste0(params$Output_data_ATOH1_ChIP, "DBresults_ATOH1_annotated.tsv"))
+
+#DB_peaks
+
+DB_peaks$peaknumber <- paste0("ATOH1_peak_", rownames(DB_peaks))
+
+#DB_peaks
+
+DB_peaks_bed <- DB_peaks %>%
+  dplyr::select(chr, start, end, peaknumber, FDR) %>%
+  arrange(chr)
+
+DB_peaks_bed
+
+write_tsv(DB_peaks_bed, paste0(params$Output_data_ATOH1_ChIP, "BETA/DB_ATOH1_peaks_fromDdsPeaksAnnotated.bed"), col_names = FALSE)
+
+
+```
+
+
+## RNAseq
+
+```{r}
+
+ATOH1_KD_DE <- read.csv(paste0(Output_data_ATOH1_KD_RNAseq, "DE_all_ATOH1_KD_list.csv"))
+
+ATOH1_KD_DE <- ATOH1_KD_DE %>%
+  dplyr::select(gene_name, log2FoldChange, padj) %>%
+  na.omit() %>%
+  dplyr::rename("#gene_name" = gene_name) %>%
+  arrange(padj)
+
+ATOH1_KD_DE
+
+write_tsv(ATOH1_KD_DE, paste0(Output_data_ATOH1_KD_RNAseq, "DE_all_ATOH1_KD_forBETA.txt"), quote = F, col_names = FALSE)
+
+```
+
+# BETA basic
+
+A tutorial of BETA can be found here http://cistrome.org/BETA/tutorial.html#basic
+
+Parameters:
+
+* -p specifies the name of TF binding data
+* -e specifies the name of the corresponding differential expression data
+* -k LIM stand for the LIMMA Format
+* -g specifies the genome of your data, hg19 for human and mm9 for mouse, others, ignore this one
+* -n specifies the prefix of the output files, others, BETA will use ‘NA’ instead
+
+*note: beta will filter peaks based on FDR if we only select the top 10000 peaks, therefore we need to include this info in the peak file. If we don't include this, it will take the top 10000 peaks independently of FDR.*
+
+
+```{bash}
+
+qsub -I
+
+cd /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA
+
+ml apps/beta
+ml apps/R
+
+# --------------------------------
+# test 100K + p < 0.01
+
+BETA basic \
+-p /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_ChIPseq/BETA/DB_ATOH1_peaks_fromDdsPeaksAnnotated.bed \
+-e /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_KD_RNAseq/DE_all_ATOH1_KD_forBETA.txt \
+-n basic_100K_001 \
+-o /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA/ddspeaks_100K_001 \
+--gname2 \
+-k O \
+--info 1,2,3 \
+--method score \
+-g hg38 \
+--pn 17737 \
+-d 100000 \
+--df 0.01 \
+--da 1
+
+# --------------------------------
+# test 10K p < 0.01
+
+BETA basic \
+-p /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_ChIPseq/BETA/DB_ATOH1_peaks_fromDdsPeaksAnnotated.bed \
+-e /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_KD_RNAseq/DE_all_ATOH1_KD_forBETA.txt \
+-n basic_10K_001 \
+-o /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA/ddspeaks_10K_001 \
+--gname2 \
+-k O \
+--info 1,2,3 \
+--method score \
+-g hg38 \
+--pn 17737 \
+-d 10000 \
+--df 0.01 \
+--da 1
+
+
+## with 100000 bp limit, no significant up or downregulation
+## with 10000 bp limit, also no significant up or downregulation
+
+```
+
+284 downtargets with 100K, p < 0.01
+150 downtargets with 10K, p < 0.01 (shared across 100K, p 0.01 analysis)
+
+
+# Compare results 10K and 100K
+
+I have run BETA with either:
+* 10K distance from TSS, DE genes filtered by p < 0.05
+or 
+* 100K distance from TSS,  DE genes filtered by p < 0.01
+
+```{r message=FALSE, warning=FALSE}
+
+downtargets_100K_p001 <- read_delim(file = paste0(params$Output_data_BETA, "ddspeaks_100K_001/basic_100K_001_downtarget.txt"), delim = "\t")
+
+uptargets_100K_p001 <- read_delim(file = paste0(params$Output_data_BETA, "ddspeaks_100K_001/basic_100K_001_uptarget.txt"), delim = "\t")
+
+downtargets_10K_p001 <- read_delim(file = paste0(params$Output_data_BETA, "ddspeaks_10K_001/basic10K_downtarget.txt"), delim = "\t")
+
+print(paste0("Downregulated targets with a peak within 10Kb of TSS (and DE by p > 0.01) are ", length(downtargets_10K_p001$GeneSymbol), ", while downregulated targets with a peak within 100Kb of TSS (and DE by p > 0.01) are ", length(downtargets_100K_p001$GeneSymbol), ". Of these, ",  table(downtargets_10K_p001$GeneSymbol %in% downtargets_100K_p001$GeneSymbol), " are shared across the two datasets, meaning that these genes have peaks within 10Kb and could be more likely to be regulated at TSS and promoter, rather than distal regions."))
+
+
+```
+
+# Run gprofiler on direct targets
+
+```{r fig.height=8, fig.width=12}
+
+library(gprofiler2)
+library(clusterProfiler)
+library(enrichplot)
+library(DOSE)
+
+# Run Gprofiler on direct targets - downregulated genes at 100K, p > 0.01
+
+## select data
+
+downregulated <- downtargets_100K_p001 %>%
+  arrange(`rank product`) %>%
+  dplyr::select(GeneSymbol, `rank product`) %>%
+  deframe()
+
+upregulated <- uptargets_100K_p001 %>%
+  arrange(`rank product`) %>%
+  dplyr::select(GeneSymbol, `rank product`) %>%
+  deframe()
+
+## run GProfiler 2
+
+gp_down <- gost(names(downregulated), organism = "hsapiens", ordered_query = TRUE, as_short_link = FALSE, evcodes = TRUE)
+
+#gp_up <- gost(names(upregulated), organism = "hsapiens", ordered_query = TRUE, as_short_link = FALSE, evcodes = TRUE) 
+
+BP <- gp_down$result %>% 
+  filter(source == "GO:BP") %>% 
+  mutate(p_value = p_value*-1) %>%
+  rbind(filter(gp_up$result, gp_up$result$source == "GO:BP")) %>%
+  arrange(p_value)
+
+gp.results <- ggplot(data = BP, 
+                     aes(x = factor(term_name, levels = pull(arrange(BP, desc(p_value)), term_name)), 
+                         y = sign(p_value) * -log10(abs(p_value)))) +
+  geom_bar(stat = "identity", colour  = "black", width = .8) + 
+  geom_hline(yintercept = -log10(0.05), colour = 'red') +
+  geom_hline(yintercept = +log10(0.05), colour = 'red') +
+  coord_flip() +
+  theme(text = element_text(family = "Helvetica", size = 16),
+      	axis.text = element_text(family = "Helvetica", size = 16)) +
+  labs(y = ("-log10(p value)"), x = "GO Biological Process")
+       
+gp.results
+
+ggsave(paste0(Output_figures_BETA, "gProfiler_BETA_targets_100K_p001.pdf"), gp.results, width = 12, height = 8)
+
+# Run Gprofiler on direct targets - downregulated genes at 10K, p > 0.01
+
+downregulated <- downtargets_10K_p001 %>%
+  arrange(`rank product`) %>%
+  dplyr::select(GeneSymbol, `rank product`) %>%
+  deframe()
+
+## run gprofiler2
+
+gp_down <- gost(names(downregulated), organism = "hsapiens", ordered_query = TRUE, as_short_link = FALSE, evcodes = TRUE)
+
+BP <- gp_down$result %>% 
+  filter(source == "GO:BP") %>% 
+  mutate(p_value = p_value*-1) %>%
+  arrange(p_value)
+
+gp.results <- ggplot(data = BP, 
+                     aes(x = factor(term_name, levels = pull(arrange(BP, desc(p_value)), term_name)), 
+                         y = sign(p_value) * -log10(abs(p_value)))) +
+  geom_bar(stat = "identity", colour  = "black", width = .8) + 
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  geom_hline(yintercept = -log10(0.05), colour = 'red') +
+  geom_hline(yintercept = +log10(0.05), colour = 'red') +
+  coord_flip() +
+  theme(text = element_text(family = "Helvetica", size = 16),
+      	axis.text = element_text(family = "Helvetica", size = 16)) +
+  labs(y = ("-log10(p value)"), x = "GO Biological Process")
+
+       
+gp.results
+
+ggsave(paste0(params$Output_figures_BETA, "gProfiler_BETA_targets_10K_p001.pdf"), gp.results, width = 12, height = 12)
+
+top_15 <- BP %>%
+  slice_max(p_value, n = 15)
+
+gp.results.top15 <- ggplot(data = top_15, 
+                     aes(x = factor(term_name, levels = pull(arrange(top_15, desc(p_value)), term_name)), 
+                         y = sign(p_value) * -log10(abs(p_value)))) +
+  geom_bar(stat = "identity", colour  = "black", width = .8) + 
+  geom_hline(yintercept = -log10(0.05), colour = 'red') +
+  geom_hline(yintercept = +log10(0.05), colour = 'red') +
+  coord_flip() +
+  theme(text = element_text(family = "Helvetica", size = 14),
+      	axis.text = element_text(family = "Helvetica", size = 12)) +
+  labs(y = ("-log10(p value)"), x = "GO Biological Process")
+       
+gp.results.top15
+
+ggsave(paste0(params$Output_figures_BETA, "gProfiler_BETA_targets_10K_p001_top15.pdf"), gp.results.top15, width = 12, height = 12)
+
+
+```
+
+# Comparison with ASCL1 and NEUROD1 targets from Borromeo paper
+
+I will compare ATOH1 direct targets (identified at 10Kb from TSS) with ASCL1 and NEUROD1 targets identified in the Borromeo paper (2016) where they performed ChipSeq and integrated the peks with hSCLC DE from George et al. to build up a list of 620 ASCL1 targets and 443 NEUROD1 targets.
+
+
+```{r}
+
+library(ggvenn)
+
+downtargets_10K_p001
+
+signatures <- read_csv("/mnt/gpfs2/data/cep/acatozzi/gene_signatures/Custom_GSEA.csv")
+
+compare <- list(
+  ASCL1 = na.omit(signatures$ASCL1_Targets_Borromeo),
+  NEUROD1 = na.omit(signatures$NEUROD1_Targets_Borromeo),
+  ATOH1 = downtargets_10K_p001$GeneSymbol
+)
+
+ggvenn(compare)
+
+ggsave(paste0(params$Output_figures_BETA, "Overlap_ATOH1_ASCL1_NEUROD1_direct_targets_Borromeo.pdf"), ggvenn(compare), width = 8, height = 8)
+
+```
+
+# Comparison with SCLC-A, SCLC-N signatures Ireland 2021
+
+```{r}
+
+library(ggvenn)
+
+downtargets_10K_p001
+
+signatures <- read_csv("/mnt/gpfs2/data/cep/acatozzi/gene_signatures/Custom_GSEA.csv")
+
+compare <- list(
+  SCLC_A = na.omit(signatures$`SCLC-A_Ireland`),
+  SCLC_N = na.omit(signatures$`SCLC-N_Ireland`),
+  ATOH1 = downtargets_10K_p001$GeneSymbol
+)
+
+ggvenn(compare)
+
+ggsave(paste0(params$Output_figures_BETA, "Overlap_ATOH1_ASCL1_NEUROD1_direct_targets_Ireland.pdf"), ggvenn(compare), width = 8, height = 8)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+############## END OF UP TO DATE CODE ############## 
+
+# BETA Plus
+
+Here I will run beta plus to check for motifs of possible interactor of ATOH1 at distal sites.
+
+
+```{bash}
+
+qsub -I
+
+cd /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA
+
+ml apps/beta
+ml apps/R
+
+# --------------------------------
+# test 100K + p < 0.01
+
+BETA plus \
+-p /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_ChIPseq/BETA/DB_ATOH1_peaks_fromDdsPeaksAnnotated.bed \
+-e /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_KD_RNAseq/DE_all_ATOH1_KD_forBETA.txt \
+-n ATOH1_beta_plus \
+-o /data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA_plus/ddspeaks_100K_001 \
+--gname2 \
+-k O \
+--info 1,2,3 \
+--method score \
+-g hg38 \
+--pn 17737 \
+-d 100000 \
+--df 0.01 \
+--da 1 \
+--gs /data/cep/acatozzi/ATOH1_ChIPSeq/hg38.fa
+
+
+```
+
+

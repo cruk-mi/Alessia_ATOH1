@@ -1,0 +1,207 @@
+---
+title: "Test_deeptools"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# *Aim of the analysis*
+
+*Aim of this script is to run deeptools on ChIPSeq files to obtain ChIP heatmap and signal profile.*
+
+# Deeptools computeMatrix, single samples
+
+This is to run ComputeMatrix with Reference point TSS on one sample on a test file that includes only 500 genes in chr1.
+
+```{bash}
+
+ml apps/deeptools
+
+computeMatrix reference-point --referencePoint TSS \
+-b 3000 -a 3000 \
+-R /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/genome/test_deeptools_chr1.bed \
+-S /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/bwa/mergedLibrary/bigwig/CDX19_ShRen_DOX_IP_SY0287_R1.bigWig \
+--skipZeros \
+-o /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/Deeptools/testSY0287.gz \
+--numberOfProcessors 16
+
+```
+
+This is to run ComputeMatrix with scale-regions on one bigwig file on the full human genome.
+*Note: run in terminal, not within Rmarkdown.*
+
+```{bash}
+
+qsub -I
+
+cd /scratch/wsspaces/acatozzi-deeptools-0
+
+ml apps/deeptools
+
+computeMatrix scale-regions \
+-R /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/genome/Homo_sapiens.GRCh38.99.bed \
+-S /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/bwa/mergedLibrary/bigwig/CDX19_ShRen_DOX_IP_SY0287_R1.bigWig \
+-o /scratch/wsspaces/acatozzi-deeptools-0/test.gz \
+-m 1000 \
+-b 4000 \
+-a 4000 \
+--skipZeros \
+--smartLabels \
+--numberOfProcessors 16
+
+
+plotProfile -m /scratch/wsspaces/acatozzi-deeptools-0/test.gz \
+-out test.png
+
+```
+
+# Concatenate in multiple jobs
+
+This is to submit a job to the cluster for each BigWig file in the specific folder. Can be run from Rmarkdown.
+
+```{bash}
+
+ls /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/bwa/mergedLibrary/bigwig/CDX19*.bigWig > bigWigFileList.txt
+
+while read -r FILE; do
+echo $FILE
+qsub -v FILE=${FILE}  <<-"EOF"
+#!/bin/sh
+#PBS -S /bin/sh
+#PBS -l nodes=1:ppn=16,walltime=90:00:00,mem=80gb
+#PBS -j oe
+#PBS -V
+#PBS -N runComputeMatrix
+
+ml apps/deeptools
+
+cd /scratch/wsspaces/acatozzi-deeptools-0
+
+SAMPLENAME=$(basename $FILE | sed "s/.bigWig//g")
+
+computeMatrix reference-point --referencePoint TSS \
+-b 3000 -a 3000 \
+-R /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/genome/Homo_sapiens.GRCh38.99.bed \
+-S $FILE \
+--skipZeros \
+-o ${SAMPLENAME}.gz \
+--numberOfProcessors $PBS_NP
+
+plotProfile -m ${SAMPLENAME}.gz \
+-out ${SAMPLENAME}.png
+
+
+EOF
+done < bigWigFileList.txt
+
+
+```
+
+This is to submit a job to the cluster for each BigWig file in the specific folder; this will run ComputeMatrix with the option scale-regions. Can be run from Rmarkdown.
+
+```{bash}
+
+cd /scratch/wsspaces/acatozzi-deeptools-0
+
+ls /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/bwa/mergedLibrary/bigwig/CDX19*.bigWig > bigWigFileList.txt
+
+while read -r FILE; do
+echo $FILE
+qsub -v FILE=${FILE}  <<-"EOF"
+#!/bin/sh
+#PBS -S /bin/sh
+#PBS -l nodes=1:ppn=16,walltime=90:00:00,mem=80gb
+#PBS -j oe
+#PBS -V
+#PBS -N runComputeMatrix
+
+ml apps/deeptools
+
+cd /scratch/wsspaces/acatozzi-deeptools-0
+
+SAMPLENAME=$(basename $FILE | sed "s/.bigWig//g")
+
+computeMatrix scale-regions \
+-R /data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/Narrow_peak/genome/Homo_sapiens.GRCh38.99.bed \
+-S $FILE \
+-o ${SAMPLENAME}.gz \
+-m 1000 \
+-b 4000 \
+-a 4000 \
+--skipZeros \
+--smartLabels \
+--numberOfProcessors $PBS_NP
+
+plotProfile -m ${SAMPLENAME}.gz \
+-out ${SAMPLENAME}.pdf
+
+
+EOF
+done < bigWigFileList.txt
+
+
+```
+
+# Multiple samples plotProfile deeptools
+
+This is to submit an interactive job to cluster and computeMatrix for multiple samples. Note: I have not managed to fix the label on Y axis at this stage, so not sure how to run plotProfile after having combined the matrices.
+
+```{bash}
+
+qsub -I
+# create workspace in scratch
+ws_allocate ac_deeptools 90
+# navigate to scratch location
+cd /scratch/wsspaces/acatozzi-ac_deeptools-0
+# load deeptools
+ml apps/deeptools
+
+computeMatrix scale-regions -R /data/cep/acatozzi/ATOH1_ChIPSeq/ProcessedData_ChIPandRNAseq/NFpipeline_ChIP/results_human/genome/Homo_sapiens.GRCh38.99.bed -S /data/cep/acatozzi/ATOH1_ChIPSeq/ProcessedData_ChIPandRNAseq/NFpipeline_ChIP/results_human/bwa/mergedLibrary/bigwig/CDX19_ShRen_DOX_IP_SY0287_R1.bigWig /data/cep/acatozzi/ATOH1_ChIPSeq/ProcessedData_ChIPandRNAseq/NFpipeline_ChIP/results_human/bwa/mergedLibrary/bigwig/CDX19_ShRen_DOX_IP_Ptech_R1.bigWig /data/cep/acatozzi/ATOH1_ChIPSeq/ProcessedData_ChIPandRNAseq/NFpipeline_ChIP/results_human/bwa/mergedLibrary/bigwig/CDX19_ShRen_DOX_IP_H3K4me3_R1.bigWig /data/cep/acatozzi/ATOH1_ChIPSeq/ProcessedData_ChIPandRNAseq/NFpipeline_ChIP/results_human/bwa/mergedLibrary/bigwig/CDX19_ShRen_INPUT_R1.bigWig -o combinedMatrices.gz -m 1000 -b 4000 -a 4000 --skipZeros --smartLabels --numberOfProcessors 16
+
+plotProfile -m combinedMatrices.gz \
+--perGroup \
+-out ATOH1_WT_Profile_per_group_y.pdf \
+--yMin 0.01 \
+--yMax 1
+
+```
+
+
+
+
+
+
+
+
+## FIX THIS // INCOMPLETE CODE
+*PlotProfile is missing Y labels; do we want to combine plots onto the same one? i.e. H3K4me3, ATOH1 Ptech, ATOH1 SY0287, input*
+
+
+# Interaction with ProfilePlyr package
+
+Export profileplyr object to deep tools matrix
+
+```{r}
+
+#matrices made up in ChIP_analisys_alessia script with profileplyr
+
+output_path <- "/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/Deeptools/ATOH1chipseq_SY0287.MAT.gz"
+export_deepToolsMat(SY0287, con = output_path)
+output_path <- "/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/Deeptools/ATOH1chipseq_Both.MAT.gz"
+export_deepToolsMat(proplyrObj, con = output_path)
+output_path <- "/data/cep/acatozzi/ATOH1_ChIPSeq/Pilot/alessias-chip-analysis/Data/Deeptools/ATOH1chipseq_Ptech.MAT.gz"
+export_deepToolsMat(Ptech, con = output_path)
+
+```
+
+```{bash}
+
+ml apps/deeptools
+
+plotProfile -m /data/cep/acatozzi/ATOH1_ChIPSeq/ProcessedData_ChIPandRNAseq/NFpipeline_ChIP/results_human/bwa/mergedLibrary/deepTools/plotProfile/CDX19_ShRen_DOX_IP_Ptech_R1.computeMatrix.mat.gz \
+-out /scratch/wsspaces/acatozzi-ac_deeptools-0/plotProfile2.png --yAxisLabel CHIPSIGNAL --yMax 1
+
+```
+

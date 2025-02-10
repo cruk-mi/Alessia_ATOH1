@@ -1,0 +1,1138 @@
+---
+title: "ATOH1 knockdown RNAseq analysis"
+author: "Alessia"
+date: "08/03/2021"
+params:
+   CDX_folder: "/data/cep/CDX_Model_NGS_Data/RNA_Seq/"
+   Nextflow_output_RNASeq: "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_RNAseq/results_human/"
+   Nextflow_output_ChIPSeq: "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_ChIP/results_human/"
+   Design_files: "/data/cep/acatozzi/ATOH1_ChIPSeq/alessias-chip-analysis/Data/"
+   Output_data_ATOH1_KD_RNAseq: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_KD_RNAseq/"
+   Output_data_ATOH1_ChIP: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/ATOH1_ChIPseq/"
+   Output_data_CDX_Bulk: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/CDX_bulk_RNAseq/"
+   Output_data_BETA: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/Integrative_analysis/BETA/"
+   RDS_output: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_data/RDSfiles/"
+   Output_figures_ATOH1_KD_RNAseq: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_KD_RNAseq/"
+   Output_figures_ATOH1_ChIP: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/ATOH1_ChIPseq/"
+   Output_figures_CDX_Bulk: "/data/cep/acatozzi/ATOH1_ChIPSeq/Output_figures/CDX_bulk_RNAseq/"
+   Input_data: "/data/cep/acatozzi/ATOH1_ChIPSeq/Input_data/"
+   Gene_signatures: "/data/cep/acatozzi/gene_signatures/"
+   MSigDB: "/mnt/gpfs2/data/cep/MSigDB/MSigDB_v7.4/msigdb_v7.4_Symbols_GMTs/"
+   CDX17P_ATOH1_KD_TPM: "/data/cep/CDX_Model_NGS_Data/ExVivo_Experiments/ATOH1_KD_ACatozzi/NFpipeline_RNAseq/results_human/star_salmon/salmon.merged.gene_tpm.tsv"
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    number_sections: yes
+    self_contained: yes
+    theme: paper
+    toc: yes
+    toc_float: yes
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+library(tidyverse)
+library(DESeq2)
+library(vsn)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggrepel)
+library(ashr)
+library(EnhancedVolcano)
+library(readxl)
+library(viridis)
+library(colorspace)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(clusterProfiler)
+library(ggpubr)
+library(rtracklayer)
+library(gage)
+library(gageData)
+library(beeswarm)
+library(fgsea)
+library(gprofiler2)
+library(clusterProfiler)
+library(enrichplot)
+library(DOSE)
+
+PurOr_palette <- colorRampPalette(c("darkslateblue", "white", "darkorange3"))(n=300)
+YlGnBu <- colorRampPalette(c("wheat1", "lightskyblue1", "dodgerblue4"))(n=300)
+Red_palette <- colorRampPalette(c("white", "darkred"))(n = 299) 
+Violet_palette <- colorRampPalette(c("ivory", "violetred4"))(n=100)
+
+
+#hcl_palettes(plot = TRUE)
+red <- sequential_hcl(299, palette = "Reds2", rev = T)
+blues <- sequential_hcl(299, palette = "Blues3")
+
+```
+
+
+# Aim of the analysis
+
+*The aim of this analysis is to perform differential gene expression analysis in ATOH1 KD CDX19 samples. This information will also overlaied with ChIPseq data from CDX19.*
+
+
+# Load ATOH1 KD count matrix and metadata
+
+Sam has generated a count matrix for the ATOH1 KD RNAseq (CD29 run). Mouse contamination is <2% therefore we did not filter the data.
+Here I make the dds object and filter genes with low count (<10 across all samples). Note that about 40K genes are non-coding therefore it is okay that the gene count goes from 60K to around 20K after filtering.
+
+```{r}
+
+# Import gene annotation
+
+gtfFile = "/data/cep/CDX_Model_NGS_Data/Reference/Homo_sapiens.GRCh38.99.gtf"
+txdb <- GenomicFeatures::makeTxDbFromGFF(gtfFile)
+
+gr.ann <- import(gtfFile)
+geneLookup <- tibble(gene_id = gr.ann$gene_id, gene_name = gr.ann$gene_name, geneBiotype = gr.ann$gene_biotype) %>% distinct()
+
+geneLookup$entrez = mapIds(org.Hs.eg.db,
+                    keys=geneLookup$gene_id, 
+                    column="ENTREZID",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+head(geneLookup)
+
+```
+
+
+```{r message=FALSE}
+
+# Load metadata
+
+ATOH1_decoder <- read_xlsx(paste0(params$Design_files, "sampleSheet_RNAseq_CD29.xlsx"))
+
+ATOH1_decoder$Full_name <- gsub("#", "-", ATOH1_decoder$Full_name)
+
+ATOH1_decoder$Reps <- ifelse(ATOH1_decoder$Experiment_number == "29541", paste(ATOH1_decoder$Full_name, "rep_1"),
+                        ifelse(ATOH1_decoder$Experiment_number == "29547",  paste(ATOH1_decoder$Full_name, "rep_2"), paste(ATOH1_decoder$Full_name, "rep_3")))
+                                                                                                        
+# Load counts from NFcore pipeline
+
+raw_counts <- read_tsv(paste0(params$Nextflow_output_RNASeq, "star_salmon/salmon.merged.gene_counts.tsv"))
+
+# Need to fix the counts file names and remove the _R1 
+
+colnames(raw_counts) <- colnames(raw_counts) %>% 
+							str_remove("_R1")
+
+# Need to re-order them correctly according to the coldata
+
+raw_counts <- raw_counts %>% dplyr::select(gene_id, ATOH1_decoder$File_Name)
+
+raw_counts
+
+paste("Check all samples match up - ", all(colnames(data.frame(raw_counts, row.names = "gene_id")) == ATOH1_decoder$File_Name))
+
+```
+
+```{r}
+
+dds <- DESeqDataSetFromMatrix(countData = round(data.frame(raw_counts, row.names = "gene_id")), 
+                              colData = data.frame(ATOH1_decoder, row.names = "File_Name"), 
+                              design = ~Experiment_number + DOX + Knockdown)
+
+print(paste0("Unprocessed count data size: ", dim(counts(dds))[1]))
+dds <- dds[ rowSums(counts(dds)) > 10,]
+print(paste0("DESeq object size after removing low count (<10) genes: ", dim(counts(dds))[1]))
+
+vsd <- vst(dds, blind = TRUE)
+
+```
+
+# PCA
+
+In the PCA is evident that there is a big effect due to different experimental conditions (August vs December harvest of the cells). #29541 and #29547 were seeded at 300,000 cells/well (in 2ml) and RNA harvested at day 6 of DOX treatment. Treatment with dox does not influence the transcriptional profile. This is accounted for in the differential expression analysis and vst counts will be corrected for the effect of the experiment number.
+
+```{r}
+
+pcaData.vst <- prcomp(t(assay(vsd)), scale = TRUE, center = TRUE)
+
+#table(rownames(pcaData.vst$x) == rownames(decoder))
+
+pcaData.df <- data.frame(pcaData.vst$x, sample = ATOH1_decoder$Full_name, KD = ATOH1_decoder$Knockdown, experiment = ATOH1_decoder$Experiment_number, DOX = ATOH1_decoder$DOX)
+
+# Calculate the variance attributed to each PC
+
+percentVar <- round(100 * pcaData.vst$sdev^2 / sum(pcaData.vst$sdev^2))
+
+PCA_exp <- ggplot(pcaData.df, aes(x = PC1, y = PC2, shape = experiment, color = KD)) +
+    geom_point(size = 3) +
+    xlab(paste0("PC1:", percentVar[1], "% variance")) +
+    ylab(paste0("PC2:", percentVar[2], "% variance")) +
+    geom_hline(yintercept=0, linetype = "dashed") +
+    geom_vline(xintercept=0, linetype = "dashed") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    ggtitle("PCA without any correction - experiment batch") +
+    scale_color_manual(values = c("darkslateblue", "deeppink"))
+
+PCA_exp
+
+#ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_PCA_beforeBatchEffectRemoval.pdf"), PCA_exp, width = 6, height = 4.5)
+
+```
+
+After correction for experimental batch, PC1 separates WT and KD samples.
+
+```{r}
+
+vsd.rmExp <- vsd
+
+# remove batch effect with limma
+
+assay(vsd.rmExp) <- limma::removeBatchEffect(assay(vsd), batch = ATOH1_decoder$Experiment_number)
+
+pcaData.rem.vst <- prcomp(t(assay(vsd.rmExp)), scale = TRUE, center = TRUE)
+
+#table(rownames(pcaData.vst$x) == rownames(decoder))
+
+pcaData.df <- data.frame(pcaData.rem.vst$x, sample = ATOH1_decoder$Full_name, KD = ATOH1_decoder$Knockdown, experiment = ATOH1_decoder$Experiment_number)
+
+# Calculate the variance attributed to each PC
+
+percentVar <- round(100 * pcaData.rem.vst$sdev^2 / sum(pcaData.rem.vst$sdev^2))
+
+PCA_exp_after <- ggplot(pcaData.df, aes(x = PC1, y = PC2, color = KD, shape = experiment)) +
+    geom_point(size = 3) +
+    xlab(paste0("PC1:", percentVar[1], "% variance")) +
+    ylab(paste0("PC2:", percentVar[2], "% variance")) +
+    geom_hline(yintercept=0, linetype = "dashed") +
+    geom_vline(xintercept=0, linetype = "dashed") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    ggtitle("PCA after correction for experiment batch") +
+    scale_color_manual(values = c("darkslateblue", "deeppink"))
+
+PCA_exp_after
+
+#ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_PCA_afterBatchEffectRemoval.pdf"), PCA_exp_after, width = 6, height = 4.5)
+
+```
+
+# Sample correlation heatmap
+
+```{r}
+
+sampleDists <- dist(t(assay(vsd.rmExp)))
+sampleDistMatrix <- as.matrix(sampleDists)
+
+#rownames(sampleDistMatrix) == ATOH1_decoder$File_Name
+
+rownames(sampleDistMatrix) <- ATOH1_decoder$Reps
+colnames(sampleDistMatrix) <- NULL
+
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+sampleDistHeatmap.plot <- pheatmap::pheatmap(sampleDistMatrix,
+                                    clustering_distance_rows = sampleDists,
+                                    clustering_distance_cols = sampleDists,
+                                    fontsize = 10,
+                                    color = blues,
+                                    annotation_row = data.frame(row.names = ATOH1_decoder$Reps, dplyr::select(ATOH1_decoder, Knockdown)))
+
+```
+
+All of the samples cluster based on whether they are ATOH1 competent or depleted, with the exception of one uninduced CDX17P sh3 - which is also evident in PCA.
+
+# Quick check for ATOH1 expression
+
+Set up the data for plotting heatmaps.
+
+```{r, fig.height=4, fig.width=4}
+
+vsd.rmExp.annot <- vsd.rmExp
+  
+table(colnames(vsd.rmExp.annot) == ATOH1_decoder$File_Name)
+
+colnames(vsd.rmExp.annot) <- ATOH1_decoder$Reps
+
+# annotate vsd object
+
+vsd.rmExp.annot <- assay(vsd.rmExp.annot) %>% 
+                        as_tibble(rownames = "gene_id") %>% 
+                        left_join(geneLookup, by = "gene_id")
+
+#saveRDS(vsd.rmExp.annot, file = paste0(params$RDS_output, "CDX19_ATOH1_KD_vst_counts_annotated.rds"))
+
+# create heatmap annotation
+
+heatmap_annot <- ATOH1_decoder %>%
+  dplyr::select("Full_name", "Knockdown", "Reps", "Experiment_number", "File_Name") %>%
+  column_to_rownames(var = "Reps")
+
+```
+
+I will just quickly check that effectively ATOH1 knockdown is detected.
+
+```{r, fig.height=15, fig.width=10}
+
+# Make heatmap
+
+TFs <- c("ASCL1", "NEUROD1", "ATOH1", "POU2F3", "YAP1", "POU4F3", "GFI1", "DLL3", "HES1", "HES5", "DLL4", "NOTCH1", "NFIB", "CD44", "VEGFB",  "REST", "FOXC2", "HES6", "HEY1", "FOXM1", "DLL1")
+
+# apoptosis genes: "BOK", "BCL2", "BCL2XL", "BAX", "BAD", "BAK1", "BID",
+
+plotData <- filter(vsd.rmExp.annot, vsd.rmExp.annot$gene_name %in% TFs) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("CDX"))
+
+plotHeatmap.scaled <- pheatmap::pheatmap(plotData,
+                  color = PurOr_palette,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,                 
+                  treeheight_row = 25,
+                  treeheight_col = 25,
+                  cutree_cols = 2,
+                  fontsize = 14,
+                  cellwidth = 16,
+                  cellheight = 30,
+                  angle_col = 90,
+                  annotation_col = dplyr::select(heatmap_annot, "Knockdown", "Experiment_number"),
+                  scale = "none",
+                  show_colnames = TRUE,
+                  annotation_colors = list(Knockdown = c(Y = "orchid", N = "midnightblue"), Experiment_number = c("29541" ="lightseagreen", "29547" = "darkturquoise", "29582" = "paleturquoise")))
+
+```
+## GOI heatmap
+
+```{r eval=FALSE, fig.height=15, fig.width=10, include=FALSE}
+
+# Make heatmap of NECROPTOSIS genes
+
+GOI <- c("MLKL", "RIPK1", "RIPK2", "RIPK3", "FADD", "BIRC2", "XIAP", "TNFRSF10B", "TNFRSF10A", "CASP8", "FASLG", "BIRC3", "TNFSF10", "CFLAR", "SLC7A11", "GPX4")
+
+# apoptosis genes: "BOK", "BCL2", "BCL2XL", "BAX", "BAD", "BAK1", "BID",
+
+plotData <- filter(vsd.rmExp.annot, vsd.rmExp.annot$gene_name %in% GOI) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("CDX"))
+
+plotHeatmap.scaled <- pheatmap::pheatmap(plotData,
+                  color = PurOr_palette,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,                 
+                  treeheight_row = 25,
+                  treeheight_col = 25,
+                  cutree_cols = 2,
+                  fontsize = 14,
+                  cellwidth = 16,
+                  cellheight = 30,
+                  angle_col = 90,
+                  annotation_col = dplyr::select(heatmap_annot, "Knockdown", "Experiment_number"),
+                  scale = "none",
+                  show_colnames = FALSE,
+                  annotation_colors = list(Knockdown = c(Y = "orchid", N = "midnightblue"), Experiment_number = c("29541" ="lightseagreen", "29547" = "darkturquoise", "29582" = "paleturquoise")))
+
+```
+
+
+# Differential gene expression
+
+Here we perform DGEA between WT and KD samples, taking into account the experimental batch and the effect of DOX (although it does not seem to influence the samples).
+
+```{r}
+
+dds <- DESeq(dds)
+
+resultsNames(dds)
+
+```
+
+## Volcano plot
+
+Visualization of DGEA results with non-transformed resuls and with shrunken LFC. Shrinking LFC accounts for the absolute difference in counts between DE genes (i.e. normalizes for lowly expressed genes). 
+
+```{r, fig.width=6, fig.height=8}
+
+volcanodata <- results(dds) %>% 
+  as_tibble(rownames = "gene_id") %>% 
+  left_join(geneLookup, by = "gene_id")
+
+EnhancedVolcano(volcanodata,
+    lab = volcanodata$gene_name,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.01,
+    FCcutoff = 0.8,
+    #transcriptLabSize = 3.5,
+    #transcriptPointSize = 2,
+    #transcriptLabvjust = -1.5,
+    title ="Differentially expressed genes in ATOH1 KD")
+
+# shrinkage
+
+resShrink_ATOH1_KD <- lfcShrink(dds, coef = "Knockdown_Y_vs_N", type = "apeglm")
+
+#saveRDS(resShrink_ATOH1_KD, file = paste0(params$RDS_output, "CDX19_ATOH1_KD_res_shrink.rds"))
+
+volcanodata <- resShrink_ATOH1_KD %>% 
+  as_tibble(rownames = "gene_id") %>% 
+  left_join(geneLookup, by = "gene_id")
+
+volcanoplot <- EnhancedVolcano(volcanodata,
+    lab = volcanodata$gene_name,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,
+    FCcutoff = 0.8,
+    labSize = 6,
+    pointSize = 2,
+    title ="Differentially expressed genes in ATOH1 KD  shrunken LFC", 
+    col = c("grey30", "grey30", "grey30", "red2"))
+
+volcanoplot
+
+#ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_VolcanoPlot.pdf"), volcanoplot, width = 12, height = 8)
+
+# capped top 20 volcano plot
+
+volcanodata <- resShrink_ATOH1_KD %>% 
+  as_tibble(rownames = "gene_id") %>% 
+  left_join(geneLookup, by = "gene_id") %>%
+  mutate(capped_padj = ifelse(-log10(padj) > 20, 1e-20, padj))
+
+labels <- volcanodata %>% filter(abs(log2FoldChange) > 0.7 & padj < 0.001) %>%
+  dplyr::select(gene_name) %>%
+  filter(gene_name != "AP006222.1")
+
+volcanoplot <- EnhancedVolcano(volcanodata,
+    lab = volcanodata$gene_name,
+    x = 'log2FoldChange',
+    y = 'capped_padj',
+    pCutoff = 0.05,
+    FCcutoff = 0.8,
+    pointSize = 2,
+    ylim = c(0, 20), xlim = c(-4.5, 4),
+    selectLab = labels$gene_name,
+    labSize = 4,
+    drawConnectors = F,
+    #lengthConnectors = unit(0.03, "npc"),
+    title ="Differentially expressed genes in ATOH1 KD  shrunken LFC", 
+    col = c("grey30", "grey30", "royalblue", "red2"))
+
+volcanoplot
+
+ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_VolcanoPlot_cappedTo20_MoreLabels.pdf"), volcanoplot, width = 6, height = 8)
+
+```
+
+## Significant DE genes
+
+Significant genes are filtered by p djusted and LFC.
+
+```{r eval=FALSE, include=FALSE}
+# read in RDS file if needed
+
+#resShrink_ATOH1_KD <- readRDS(file = paste0(RDS_output, "CDX19_ATOH1_KD_res_shrink.rds"))
+```
+
+
+```{r}
+
+resShrink_ATOH1_KD_annot <- as_tibble(rownames_to_column(as.data.frame(resShrink_ATOH1_KD), var = "gene_id"))  %>% 
+				        left_join(geneLookup, by = "gene_id") %>% 
+				        dplyr::select(gene_id, gene_name, geneBiotype, everything()) %>%
+                na.omit(padj)
+
+#table(is.na(res$padj))
+
+write.csv(resShrink_ATOH1_KD_annot, file = paste0(params$Output_data_ATOH1_KD_RNAseq,"CDX17P_DE_all_ATOH1_KD.csv"))
+
+#write_tsv(dplyr::select(res, gene_name, log2FoldChange, padj) %>% dplyr::rename("#gene_name" = gene_name), file = paste0(Output_data_ATOH1_KD_RNAseq,"DE_all_ATOH1_KD_list_forBETAGalaxy.tsv"), quote = F)
+
+resShrink_ATOH1_KD_annot_sig <- resShrink_ATOH1_KD_annot %>% 
+                filter(padj < 0.05 & abs(log2FoldChange) > 0.8) %>% 
+                arrange(log2FoldChange)
+
+dim(resShrink_ATOH1_KD_annot_sig)
+
+
+```
+
+## export GRanges results
+
+```{r}
+
+ATOH1_KD_granges <- rownames_to_column(as.data.frame(resShrink_ATOH1_KD), var = "gene_id") %>%
+  merge(dplyr::select(as.data.frame(gr.ann), seqnames, start, end, strand, gene_id, gene_name), by = "gene_id")
+
+ATOH1_KD_granges <- makeGRangesFromDataFrame(ATOH1_KD_granges, keep.extra.columns = TRUE)
+
+ATOH1_KD_granges
+
+write_tsv(as.data.frame(ATOH1_KD_granges), file = paste0(params$Output_data_ATOH1_KD_RNAseq, "ATOH1_KD_DGEA_Granges.tsv"), col_names = TRUE)
+
+```
+
+## Heatmap of DE genes
+
+With parameters p adjusted <0.05, LFC >0.8, we find 538 DE genes.
+
+```{r, fig.width=6, fig.height=10}
+
+plotData <- filter(vsd.rmExp.annot, vsd.rmExp.annot$gene_name %in% resShrink_ATOH1_KD_annot_sig$gene_name) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("CDX"))
+
+plotHeatmap.scaled <- pheatmap::pheatmap(plotData,
+                  color = PurOr_palette,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,                 
+                  treeheight_row = 25,
+                  treeheight_col = 25,
+                  cutree_cols = 2,
+                  show_rownames = F,
+                  angle_col = 90,
+                  annotation_col = dplyr::select(heatmap_annot, "Knockdown", "Experiment_number"),
+                  scale = "row", 
+                  annotation_colors = list(Knockdown = c(Y = "orchid", N = "midnightblue"), Experiment_number = c("29541" ="lightseagreen", "29547" = "darkturquoise", "29582" = "paleturquoise")))
+
+plotHeatmap.unscaled <- pheatmap::pheatmap(plotData,
+                  color = red,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,                 
+                  treeheight_row = 25,
+                  treeheight_col = 25,
+                  cutree_cols = 2,
+                  show_rownames = F,
+                  angle_col = 90,
+                  annotation_col = dplyr::select(heatmap_annot, "Knockdown", "Experiment_number"),
+                  scale = "none", 
+                  annotation_colors = list(Knockdown = c(Y = "orchid", N = "midnightblue"), Experiment_number = c("29541" ="lightseagreen", "29547" = "darkturquoise", "29582" = "paleturquoise")))
+
+```
+
+# Test actionable targets
+
+Phil Carter has provided a list of actionable genes in solid tumors. I will intersect this info with DE genes to see whether anything comes up.
+
+```{r}
+
+actionable_targets <- read.delim(paste0(params$Input_data, "Datasets_for_comparisons/ACTIONABLE_GENES_IN_SOLID_TUMOUR.SMALL_VARIANTS.v1.11-for_Alessia.txt"), header = T)
+
+act_genes <- resShrink_ATOH1_KD_annot_sig$gene_id[which(resShrink_ATOH1_KD_annot_sig$gene_id %in% actionable_targets$gene_ID)]
+
+geneLookup %>%
+  filter(gene_id %in% act_genes)
+
+```
+
+FGF14 seems to be DE in ATOH1 WT vs KD. Is it also bound in ChIPseq? 
+
+*note: FGF14 is very lowly expressed in ATOH1 CDX in Bulk RNAseq, and is expressed in some ASCL1 models, so it does not look like a potential therapeutic target for ATOH1 CDX specifically.*
+
+About 50% of differentially expressed genes are also correlated to ATOH1 binding in ChIPseq. Even changing the parameters for DE genes I get about 50% overlap between the two datasets.
+
+# Go enrichment analysis
+
+## gProfiler
+
+```{r, fig.height=7.55, fig.width=12}
+
+downregulated <- resShrink_ATOH1_KD_annot %>%
+  filter(log2FoldChange < -0.8 & padj < 0.05) %>%
+  arrange(padj) %>%
+  dplyr::select(gene_name, padj) %>%
+  deframe()
+
+upregulated <- resShrink_ATOH1_KD_annot %>%
+  filter(log2FoldChange > 0.8 & padj < 0.05) %>%
+  arrange(padj) %>%
+  dplyr::select(gene_name, padj) %>%
+  deframe()
+
+# run gprofiler2
+
+gp_down <- gost(names(downregulated), organism = "hsapiens", ordered_query = TRUE, as_short_link = FALSE, evcodes = TRUE)
+
+gp_up <- gost(names(upregulated), organism = "hsapiens", ordered_query = TRUE, as_short_link = FALSE, evcodes = TRUE)
+
+gp_down$result
+gp_up$result
+
+
+BP <- gp_down$result %>% 
+  filter(source == "GO:BP") %>% 
+  mutate(p_value = p_value*-1) %>%
+  rbind(filter(gp_up$result, gp_up$result$source == "GO:BP")) %>%
+  arrange(p_value)
+
+BP$term_name <- make.unique(BP$term_name)
+
+BP
+
+# export GO enrichment analysis as csv
+
+write_csv(BP, file = paste0(params$Output_data_ATOH1_KD_RNAseq, "CDX17P_ATOH1_KD_GProfiler.csv"))
+
+# graph results
+
+top_15_BP <- BP %>%
+  filter(p_value > 0) %>%
+  slice_max(p_value, n = 10)
+
+top_15_BP <- top_15_BP %>%
+  rbind(BP %>% filter(p_value < 0) %>%
+  slice_max(p_value, n = 10))
+
+gp.results <- ggplot(data = top_15_BP, 
+                     aes(x = factor(term_name, levels = pull(arrange(top_15_BP, desc(p_value)), term_name)), 
+                         y = sign(p_value) * -log10(abs(p_value)))) +
+  geom_bar(stat = "identity", colour  = "black", width = .8) + 
+  geom_hline(yintercept = -log10(0.05), colour = 'red') +
+  geom_hline(yintercept = +log10(0.05), colour = 'red') +
+    theme_bw() +
+  coord_flip() +
+  theme(text = element_text(size = 18),
+      	axis.text.y = element_text(size = 14),
+        axis.text.x = element_text(size = 18)) +
+  labs(y = ("-log10(p value)"), x = "GO Biological Process")
+
+       
+gp.results
+
+ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_gprofiler_BP_top10.pdf"), gp.results, width = 12, height = 7.5)
+
+```
+
+
+## FGSEA
+
+Here I will perform fast gene set enrichment analysis (fgsea) for hallmark pathways as well as other gene signatures (i.e. NE/NNE signature, hair cell targetome etc.) 
+
+```{r}
+library(fgsea)
+
+# import pathway lists by gene name - important: GAGE uses entrez ID while here we use gene names
+
+pathways.hallmark <- gmtPathways(paste0(params$MSigDB, "h.all.v7.4.symbols.gmt"))
+pathways.kegg <- gmtPathways(paste0(params$MSigDB,"c2.cp.kegg.v7.4.symbols.gmt"))
+pathways.reactome <- gmtPathways(paste0(params$MSigDB,"c2.cp.reactome.v7.4.symbols.gmt"))
+pathways.allGeneOntology <- gmtPathways(paste0(params$MSigDB,"c5.all.v7.4.symbols.gmt"))
+pathways.biologicalProcess <- gmtPathways(paste0(params$MSigDB,"c5.go.bp.v7.4.symbols.gmt"))
+pathways.cellComponents <- gmtPathways(paste0(params$MSigDB,"c5.go.cc.v7.4.symbols.gmt"))
+pathways.molecularFunc <- gmtPathways(paste0(params$MSigDB,"c5.go.mf.v7.4.symbols.gmt"))
+pathways.immunoSig <- gmtPathways(paste0(params$MSigDB,"c7.all.v7.4.symbols.gmt"))
+
+allPathways.list <- list(hallmark = pathways.hallmark,
+                         kegg = pathways.kegg, 
+                         reactome = pathways.reactome, 
+                         allGeneOntology = pathways.allGeneOntology, 
+                         biologicalProcess = pathways.biologicalProcess, 
+                         cellComponents = pathways.cellComponents, 
+                         molecularFunc = pathways.molecularFunc, 
+                         immunoSig = pathways.immunoSig)
+
+gseaDat <- resShrink_ATOH1_KD_annot %>%
+            filter(complete.cases(.)) %>% 
+            mutate(rank.score = sign(log2FoldChange)*(-1)*log10(padj)) %>%
+            dplyr::select(gene_name, rank.score) %>%
+            na.omit() %>%
+            distinct() %>% 
+            deframe()
+
+#barplot(sort(gseaDat, decreasing = T))
+
+#fgsea for hallmark pathways
+
+fgsea_msigdb <- fgsea(pathways = pathways.hallmark, 
+                  stats    = gseaDat,
+                  minSize  = 15,
+                  maxSize  = 600,
+                  nproc = 1)
+
+fgsea_msigdb
+
+```
+
+
+```{r export}
+
+
+exp <- fgsea_msigdb %>%
+  as.data.frame() %>%
+  mutate(leading_edge = sapply(leadingEdge, toString), stringsAsFactors=FALSE)
+
+exp$leadingEdge <- NULL
+
+write_csv(exp, file = paste0(params$Output_data_ATOH1_KD_RNAseq, "fgsea_ATOH1_KD_hallmark_genesets.csv"))
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_HALLMARK_EMT_signature.pdf"), width=9, height=6)
+
+
+plotEnrichment(pathways.hallmark[["HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION"]], gseaDat) + 
+                                          labs(title="EMT")
+
+
+dev.off()
+
+
+```
+
+FGSEA does not find any biological processes enriched. However, within the hallmark GSEA list, it does find G2M checkpoint, MYC targets and E2F targets downregulated in ATOH1 knockdown.
+
+```{r eval=FALSE, include=FALSE}
+
+top_pathways <- allPathways.fgsea.sig.list$hallmark$pathway
+
+# run this in console, for some reason it does not work in Rmarkdown
+
+plotGseaTable(pathways = allPathways.list$hallmark[top_pathways], stats = gseaDat, fgseaRes = allPathways.fgsea.sig.list$hallmark, gseaParam = 0.5)
+
+```
+
+### Export for GSEA
+
+```{r}
+
+out <- resShrink_ATOH1_KD_annot %>%
+            filter(complete.cases(.)) %>% 
+            mutate(rank.score = sign(log2FoldChange)*(-1)*log10(padj)) %>%
+            dplyr::select(gene_name, rank.score) %>%
+            na.omit() %>%
+            distinct()
+
+out
+
+write.table(out, file = paste0(params$Output_data_ATOH1_KD_RNAseq, "GSEA_CDX17P_ATOH1_KD_ranked.txt"), sep = "\t", row.names = F, quote = F)
+
+```
+
+### Gene identification in Fgsea
+
+What genes are included in GSEA G2M checkpoint and how are they expressed? 
+
+```{r eval=FALSE, fig.height=20, fig.width=8, include=FALSE}
+
+allPathways.fgsea.sig.list$hallmark
+
+G2M_checkpoint_genes <- allPathways.fgsea.sig.list$hallmark %>%
+  filter(pathway == "HALLMARK_APOPTOSIS") %>%
+  pull(leadingEdge) %>%
+  unlist()
+
+plotData <- filter(vsd.rmExp.annot, vsd.rmExp.annot$gene_name %in% G2M_checkpoint_genes) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("CDX"))
+  
+plotHeatmap.scaled <- pheatmap::pheatmap(plotData,
+                  color =PurOr_palette,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,                 
+                  treeheight_row = 25,
+                  treeheight_col = 25,
+                  cutree_cols = 2,
+                  fontsize = 10,
+                  cellwidth = 16,
+                  cellheight = 10,
+                  angle_col = 90,
+                  annotation_col = dplyr::select(heatmap_annot, "Knockdown", "Experiment_number"),
+                  scale = "row",
+                  main = "HALLMARK_Apoptosis",
+                  annotation_colors = list(Knockdown = c(Y = "orchid", N = "midnightblue"), Experiment_number = c("29541" ="lightseagreen", "29547" = "darkturquoise", "29582" = "paleturquoise")))
+
+
+
+```
+
+
+```{r eval=FALSE, fig.height=22, fig.width=8, include=FALSE}
+
+MYC_targets_genes <- allPathways.fgsea.sig.list$hallmark %>%
+  filter(pathway == "HALLMARK_MYC_TARGETS_V1") %>%
+  pull(leadingEdge) %>%
+  unlist()
+
+plotData <- filter(vsd.rmExp.annot, vsd.rmExp.annot$gene_name %in% MYC_targets_genes) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("CDX"))
+  
+plotHeatmap.scaled <- pheatmap::pheatmap(plotData,
+                  color =PurOr_palette,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,                 
+                  treeheight_row = 25,
+                  treeheight_col = 25,
+                  cutree_cols = 2,
+                  fontsize = 10,
+                  cellwidth = 16,
+                  cellheight = 10,
+                  angle_col = 90,
+                  annotation_col = dplyr::select(heatmap_annot, "Knockdown", "Experiment_number"),
+                  scale = "row",
+                  main = "HALLMARK_MYC_TARGETS_V1",
+                  annotation_colors = list(Knockdown = c(Y = "orchid", N = "midnightblue"), Experiment_number = c("29541" ="lightseagreen", "29547" = "darkturquoise", "29582" = "paleturquoise")))
+
+```
+
+
+```{r eval=FALSE, fig.height=15, fig.width=8, include=FALSE}
+
+P53_genes <- allPathways.fgsea.sig.list$hallmark %>%
+  filter(pathway == "HALLMARK_P53_PATHWAY") %>%
+  pull(leadingEdge) %>%
+  unlist()
+
+plotData <- filter(vsd.rmExp.annot, vsd.rmExp.annot$gene_name %in% P53_genes) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("CDX"))
+  
+plotHeatmap.scaled <- pheatmap::pheatmap(plotData,
+                  color =PurOr_palette,
+                  cluster_rows = TRUE,
+                  cluster_cols = TRUE,                 
+                  treeheight_row = 25,
+                  treeheight_col = 25,
+                  cutree_cols = 2,
+                  fontsize = 10,
+                  cellwidth = 16,
+                  cellheight = 10,
+                  angle_col = 90,
+                  annotation_col = dplyr::select(heatmap_annot, "Knockdown", "Experiment_number"),
+                  scale = "row",
+                   main = "HALLMARK_P53_PATHWAY",
+                  annotation_colors = list(Knockdown = c(Y = "orchid", N = "midnightblue"), Experiment_number = c("29541" ="lightseagreen", "29547" = "darkturquoise", "29582" = "paleturquoise")))
+
+```
+
+## FGSEA for Signature genes
+
+Here I will perform GSEA on known gene signatures from different datasets.
+
+```{r message=FALSE, warning=FALSE}
+# fgsea will be performed on genes ranked by their log10 p adjusted, with the sign of log2 fold change to account for upregulation or downregulation
+
+gseaDat <- resShrink_ATOH1_KD_annot %>%
+            filter(complete.cases(.)) %>% 
+            mutate(rank.score = sign(log2FoldChange)*(-1)*log10(padj)) %>%
+            dplyr::select(gene_name, rank.score) %>%
+            na.omit() %>%
+            distinct() %>% 
+            deframe() %>%
+            sort()
+
+#gseaDat
+
+table(gseaDat < 0)
+
+signatures <- read_csv(paste0(params$Gene_signatures, "Custom_GSEA.csv"))
+
+#downtargets_100K_p001 <- read_delim(file = paste0(params$Output_data_BETA, "ddspeaks_100K_001/basic_100K_001_downtarget.txt"), delim = "\t")
+
+#uptargets_100K_p001 <- read_delim(file = paste0(params$Output_data_BETA, "ddspeaks_100K_001/basic_100K_001_uptarget.txt"), delim = "\t")
+
+downtargets_10K_p001 <- read_delim(file = paste0(params$Output_data_BETA, "ddspeaks_10K_001/basic10K_downtarget.txt"), delim = "\t")
+
+# import EMT signature from hallmark gene sets
+
+pathways.hallmark <- gmtPathways(paste0(params$MSigDB, "h.all.v7.4.symbols.gmt"))
+
+
+
+signatures_list <- list(Epithelial_signature = na.omit(signatures$Epithelial_signature),
+                        Mesenchymal_signature = na.omit(signatures$Mesenchymal_signature),
+                        NE_signature = na.omit(signatures$NE_signature),
+                        NonNE_signature = na.omit(signatures$NNE_signature),
+                        hair_cells_Cai2015 = na.omit(signatures$Hair_cell_Cai_et_al_2015),
+                        ATOH1_targetome_cerebellum = na.omit(signatures$ATOH1_Cerebellum_targetome_Klisch_et_al_2011),
+                        ATOH1_OE_iPSC_signature = na.omit(signatures$ATOH1_OE_iPSCs_Ng_et_al_2020),
+                        hair_cells_Menendez2020 = na.omit(signatures$hair_cells_Menendez2020),
+                        cerebellar_granule_neurons_Menendez2020 = na.omit(signatures$CerebellarGranuleCell_Menendez2020),
+                        merkel_cells_Menendez2020 = na.omit(signatures$merkel_cells_Menendez2020),
+                        goblet_cells_Menendez2020 = na.omit(signatures$goblet_cells_Menendez2020),
+                        hair_cells_Burns2015 = na.omit(signatures$hair_cells_Burns2015),
+                        downtargets_10K = downtargets_10K_p001$GeneSymbol,
+                        test_ATOH1 = names(gseaDat[1:50]),
+                        NE_signature_2021 = na.omit(signatures$NE_signature_Cai2021),
+                        NonNE_signature_2021 = na.omit(signatures$NNE_signature_Cai2021))
+
+
+```
+
+
+```{r}
+
+library(fgsea)
+
+fgseaRes <- fgsea(pathways = signatures_list, 
+                  stats    = gseaDat,
+                  minSize  = 15,
+                  maxSize  = 600,
+                  nproc = 1)
+
+fgseaRes %>% arrange(NES)
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+plotEnrichment(signatures_list$NonNE_signature, gseaDat) + 
+                                          labs(title="NonNE signature")
+
+plotEnrichment(signatures_list$NE_signature, gseaDat) + 
+                                          labs(title="NE signature")
+
+plotEnrichment(signatures_list$hair_cells_Cai2015, gseaDat) + 
+                                          labs(title="Hair cell signature (Cai et al. 2015)")
+
+plotEnrichment(signatures_list$hair_cells_Menendez2020, gseaDat) + 
+                                          labs(title="Hair cell signature (Menendez 2020)")
+
+plotEnrichment(signatures_list$hair_cells_Burns2015, gseaDat) + 
+                                          labs(title="Hair cell signature (Burns et al. 2015)")
+
+plotEnrichment(signatures_list$ATOH1_targetome_cerebellum, gseaDat) + 
+                                          labs(title="ATOH1 targetome in cerebellum (Klisch et al. 2011)")
+
+plotEnrichment(signatures_list$ATOH1_OE_iPSC_signature, gseaDat) + 
+                                          labs(title="ATOH1 OE in iPSCs (Ng et al 2021)")
+
+plotEnrichment(signatures_list$uptargets_100K, gseaDat) + 
+                                          labs(title="ATOH1 uptargets 100K")
+
+plotEnrichment(signatures_list$downtargets_100K, gseaDat) + 
+                                          labs(title="ATOH1 downtargets 100K")
+
+plotEnrichment(signatures_list$downtargets_10K, gseaDat) + 
+                                          labs(title="ATOH1 downtargets 10K")
+
+plotEnrichment(signatures_list$test_ATOH1, gseaDat) + 
+                                          labs(title="ATOH1 test")
+
+```
+
+
+*IMPORTANT: hair cell signature from Menenendez et al 2020 does not include ATOH1. This is because it was obtained by DGEA between ATOH1 driven cellular contexts, i.e. Merkel cells, hair cells, cerebellar granule cells and gut cells, sorted by GFP+ (mouse strain Math1-GFP).*
+
+
+```{r export figures, eval=FALSE, include=FALSE}
+
+exp <- fgseaRes %>%
+  as.data.frame() %>%
+  mutate(leading_edge = sapply(leadingEdge, toString), stringsAsFactors=FALSE)
+
+exp$leadingEdge <- NULL
+
+write_csv(exp, file = paste0(params$Output_data_ATOH1_KD_RNAseq, "fgsea_ATOH1_gene_signatures.csv"))
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_hair_cell_signature.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$hair_cells_Cai2015, gseaDat) + 
+                                          labs(title="Hair cell signature (Cai et al. 2015)")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_cerebellum_signature.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$ATOH1_targetome_cerebellum, gseaDat) + 
+                                          labs(title="ATOH1 targetome in cerebellum (Klisch et al. 2011)")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_NNE_signature.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$NonNE_signature, gseaDat) + 
+                                          labs(title="NonNE signature")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_NE_signature.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$NE_signature, gseaDat) + 
+                                          labs(title="NE signature")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_hair_cell_signature_Burns2015.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$hair_cells_Burns2015, gseaDat) + 
+                                          labs(title="Hair cell signature from scRNAseq (Burns et al. 2015)")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_hair_cell_signature_Menendez2020.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$hair_cells_Menendez2020, gseaDat) + 
+                                          labs(title="Hair cell signature in Math1-GFP mouse vs other ATOH1 lineages (Menendez et al. 2020)")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_hair_cell_signature_Menendez2020.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$hair_cells_Menendez2020, gseaDat) + 
+                                          labs(title="Hair cell signature (Menendez et al., 2020)")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_NNE_signature_2021.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$NonNE_signature_2021, gseaDat) + 
+                                          labs(title="NonNE signature (Cai et al., 2021)")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_NE_signature_2021.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$NE_signature_2021, gseaDat) + 
+                                          labs(title="NE signature (Cai et al., 2021)")
+
+dev.off()
+
+pdf(file = paste0(params$Output_figures_ATOH1_KD_RNAseq, "ATOH1_KD_FGSEA_EMT_signature.pdf"), width=9, height=6)
+
+plotEnrichment(signatures_list$Mesenchymal_signature, gseaDat) + 
+                                          labs(title="EMT sgnature")
+
+dev.off()
+
+
+```
+
+## Summary FGSEA
+
+I have performed RNAseq on ATOH1 KD CDX19. Knockdown was induced for 6 days, at which point ATOH1 is not expressed at the protein level. At the RNA level, we see a few changes, consisting of 484 DE genes with LFC >0.8. We might be capturing the very early changes in gene expression upon ATOH1 depletion because ATOH1 depletion has not been established for long. 
+With FGSEA, we see an increase in the NonNE signature genes, upon ATOH1 depletion, but not a decrease in NE signature meaning the cells might be acquiring a plastic state but have not fully transisioned to NNE state.
+We also find that inner ear hair cell targetome is significantly downregulated upon ATOH1 depletion, which fits with gProfiler GO enrichment analysis that highlights a few GO:BP involved in inner ear hair cell differentiation.
+
+
+# Violin plot - TPM
+
+```{r}
+
+TPM <- read.delim(params$CDX17P_ATOH1_KD_TPM) %>%
+  left_join(dplyr::select(geneLookup, gene_id, gene_name), by = "gene_id") %>%
+  dplyr::select(gene_id, gene_name, everything())
+
+TPM
+
+
+```
+
+## ATOH1 and MYCL
+
+```{r plot violin, fig.width=10, fig.height=6}
+
+GOI <- c("MYCL", "ATOH1")
+
+plotData <- TPM %>% filter(gene_name %in% GOI) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("Frese")) %>%
+  t() %>% as.data.frame() %>%
+  rownames_to_column(var = "File_Name")
+
+plotData$File_Name <- gsub("_R1", "", plotData$File_Name) 
+
+plotData <- plotData %>% 
+  left_join(dplyr::select(ATOH1_decoder, File_Name, Knockdown, Parental), by = "File_Name") %>%
+  pivot_longer(cols = c("MYCL", "ATOH1"), names_to = "gene")
+
+plotData
+
+#plot violin
+
+out <- ggplot(plotData, aes(x = Knockdown, y = log2(value+1), color = Knockdown)) +
+  geom_violin() +
+  geom_jitter(aes(shape = Parental), alpha = 0.8, width = 0.3, size = 4) +
+  theme_classic() +
+  theme(text = element_text(size = 22)) +
+  scale_color_manual(values = c("grey50", "firebrick")) +
+  facet_wrap(~ gene) +
+  ylab("Gene expression")
+
+out
+
+ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "MYCL_Violin_ATOH1_KD_log2TPM.pdf"), out, width = 10, height = 6)
+
+```
+
+## NOTCH and HES
+
+
+```{r fig.width=12, fig.height=6}
+
+GOI <- c("NOTCH1", "HES1", "REST", "SYP")
+
+plotData <- TPM %>% filter(gene_name %in% GOI) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("Frese")) %>%
+  t() %>% as.data.frame() %>%
+  rownames_to_column(var = "File_Name")
+
+plotData$File_Name <- gsub("_R1", "", plotData$File_Name) 
+
+plotData <- plotData %>% 
+  left_join(dplyr::select(ATOH1_decoder, File_Name, Knockdown, Parental), by = "File_Name") %>%
+  pivot_longer(cols = c("NOTCH1", "HES1", "REST", "SYP"), names_to = "gene")
+
+plotData
+
+#plot violin
+
+out <- ggplot(plotData, aes(x = Knockdown, y = log2(value+1), color = Knockdown)) +
+  geom_violin() +
+  geom_jitter(aes(shape = Parental), alpha = 0.8, width = 0.3, size = 4) +
+  theme_classic() +
+  theme(text = element_text(size = 22)) +
+  scale_color_manual(values = c("grey50", "firebrick")) +
+  facet_wrap(~ gene, ncol = 4) +
+  ylab("Gene expression")
+
+out
+
+ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "NOTCH1_HES1_REST_SYP_Violin_ATOH1_KD_log2TPM.pdf"), out, width = 12, height = 6)
+
+```
+
+
+## ASCL1 and NEUROD1
+
+
+```{r fig.width=12, fig.height=6}
+
+GOI <- c("ASCL1", "ATOH1", "NEUROD1")
+
+plotData <- TPM %>% filter(gene_name %in% GOI) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(starts_with("Frese")) %>%
+  t() %>% as.data.frame() %>%
+  rownames_to_column(var = "File_Name")
+
+plotData$File_Name <- gsub("_R1", "", plotData$File_Name) 
+
+plotData <- plotData %>% 
+  left_join(dplyr::select(ATOH1_decoder, File_Name, Knockdown, Parental), by = "File_Name") %>%
+  pivot_longer(cols = c("ASCL1", "ATOH1", "NEUROD1"), names_to = "gene")
+
+plotData
+
+#plot violin
+
+out <- ggplot(plotData, aes(x = Knockdown, y = log2(value+1), color = Knockdown)) +
+  geom_violin() +
+  geom_jitter(aes(shape = Parental), alpha = 0.8, width = 0.3, size = 4) +
+  theme_classic() +
+  theme(text = element_text(size = 22)) +
+  scale_color_manual(values = c("grey50", "firebrick")) +
+  facet_wrap(~ gene, ncol = 4) +
+  ylab("Gene expression")
+
+out
+
+ggsave(paste0(params$Output_figures_ATOH1_KD_RNAseq, "NEUROD1_ASCL1_Violin_ATOH1_KD_log2TPM.pdf"), out, width = 12, height = 6)
+
+```
